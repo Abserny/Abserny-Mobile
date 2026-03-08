@@ -1,0 +1,34 @@
+{
+  "name": "abserny",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow/tfjs": "^4.22.0",
+    "cross-fetch": "^4.1.0",
+    "expo": "~54.0.33",
+    "expo-camera": "~17.0.10",
+    "expo-dev-client": "^6.0.20",
+    "expo-speech": "^14.0.8",
+    "expo-speech-recognition": "^3.1.0",
+    "expo-status-bar": "~3.0.9",
+    "jpeg-js": "^0.4.4",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "private": true,
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": []
+      }
+    }
+  }
+}
