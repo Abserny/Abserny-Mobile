@@ -8,9 +8,13 @@
     "ios": "expo start --ios"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@react-native-ml-kit/image-labeling": "^2.0.0",
+    "@react-native-ml-kit/text-recognition": "^2.0.0",
     "expo": "~54.0.0",
     "expo-camera": "~17.0.10",
     "expo-dev-client": "~6.0.20",
+    "expo-file-system": "~19.0.21",
     "expo-haptics": "~15.0.8",
     "expo-speech": "~14.0.8",
     "react": "19.1.0",
@@ -18,5 +22,15 @@
   },
   "devDependencies": {
     "@babel/core": "^7.24.0"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "@react-native-ml-kit/image-labeling",
+          "@react-native-ml-kit/text-recognition"
+        ]
+      }
+    }
   }
 }

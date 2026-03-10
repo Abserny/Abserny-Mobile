@@ -2,7 +2,7 @@ import React, {
     useState, useRef, useEffect, useCallback,
 } from 'react';
 import {
-    View, Text, StyleSheet, Animated,
+    View, Text, StyleSheet, Animated, Image,
     StatusBar, AccessibilityInfo,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -72,7 +72,7 @@ export default function App() {
             setAppState(STATE.READY);
             speak(
                 `Abserny ready. ${currentMode.label}. ` +
-                    `${isConnected ? '' : 'Offline mode. '}` +
+                    '' +
                     `${currentMode.instruction}`,
                 'high'
             );
@@ -130,8 +130,8 @@ export default function App() {
             stopScanAnim();
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
-            const prefix = source === 'offline' ? 'Offline. ' : '';
-            speak(prefix + result, 'high');
+
+            speak(result, 'high');
 
             setTimeout(() => {
                 if (isMounted.current) setAppState(STATE.READY);
@@ -225,7 +225,7 @@ export default function App() {
             )}
 
             <View style={styles.topBar}>
-                <Text style={styles.appName} accessibilityRole="header">ABSERNY</Text>
+                <Image source={require('./assets/logorm.png')} style={styles.appLogo} accessibilityLabel="Abserny" accessibilityRole="header" />
                 <View style={styles.statusRow}>
                     <View style={[
                         styles.statusDot,
@@ -317,6 +317,7 @@ const styles = StyleSheet.create({
 
     topBar:      { position:'absolute', top:52, left:0, right:0, alignItems:'center', gap:6 },
     appName:     { color:'#fff', fontSize:13, letterSpacing:8, fontWeight:'800' },
+    appLogo:     { width: 110, height: 36, resizeMode: 'contain' },
     statusRow:   { flexDirection:'row', alignItems:'center', gap:8 },
     statusDot:   { width:6, height:6, borderRadius:3, backgroundColor:'rgba(255,255,255,0.3)' },
     dotReady:    { backgroundColor:'#00C896' },
