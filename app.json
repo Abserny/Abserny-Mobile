@@ -1,38 +1,38 @@
 {
   "expo": {
-    "name": "abserny",
+    "name": "Abserny",
     "slug": "abserny",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
+    "userInterfaceStyle": "dark",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.abserny.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Abserny uses your camera to describe your surroundings."
+      }
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "package": "com.abserny.app"
+      "package": "com.abserny.app",
+      "permissions": [
+        "CAMERA",
+        "VIBRATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Abserny needs your camera to describe what is around you."
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "0799d64e-3a41-406e-bac1-4cba6b13acf6"
       }
-    },
-    "plugins": [
-      "expo-speech-recognition"
-    ]
+    }
   }
 }

@@ -1,247 +1,337 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, {
+    useState, useRef, useEffect, useCallback,
+} from 'react';
 import {
-    StyleSheet, View, Text, Animated,
-    Platform, StatusBar, Vibration,
-    PanResponder,
+    View, Text, StyleSheet, Animated,
+    StatusBar, AccessibilityInfo,
 } from 'react-native';
-import { CameraView, Camera } from 'expo-camera';
-import * as Speech from 'expo-speech';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 
-const GEMINI_KEY = 'AIzaSyBEh0twjrJ1zRbB4QZ73wFb0uBFRU1_uD8';
+import { useVoice }     from './hooks/useVoice';
+import { useGestures }  from './hooks/useGestures';
+import { useDetection } from './hooks/useDetection';
+import { useModes }     from './hooks/useModes';
 
-const STATES = { IDLE: 'IDLE', SCANNING: 'SCANNING', SPEAKING: 'SPEAKING' };
-
-const speak = (text) => new Promise((resolve) => {
-    Speech.stop();
-    Speech.speak(text, { language: 'en-US', rate: 0.88, pitch: 1.0, onDone: resolve, onError: resolve });
-});
+const STATE = {
+    BOOT:     'boot',
+    READY:    'ready',
+    SCANNING: 'scanning',
+    SPEAKING: 'speaking',
+    ERROR:    'error',
+};
 
 export default function App() {
-    const [state, setState]       = useState(STATES.IDLE);
-    const [feedback, setFeedback] = useState('double tap anywhere to scan');
-    const stateRef    = useRef(STATES.IDLE);
-    const lastTap     = useRef(0);
-    const cameraRef   = useRef(null);
-    const reminderRef = useRef(null);
-    const scanAnim    = useRef(new Animated.Value(0)).current;
 
-    useEffect(() => { stateRef.current = state; }, [state]);
+    const [permission, requestPermission] = useCameraPermissions();
 
-    // ── Reminder loop ─────────────────────────────────────────────────────────
-    const startReminder = useCallback(() => {
-        stopReminder();
-        reminderRef.current = setInterval(() => {
-            if (stateRef.current === STATES.IDLE) {
-                Speech.speak('Double tap anywhere to scan your surroundings.', {
-                    language: 'en-US', rate: 0.88,
-                });
-            }
-        }, 35000);
-    }, []);
+    const [appState,      setAppState]      = useState(STATE.BOOT);
+    const [lastResult,    setLastResult]    = useState('');
+    const [isConnected,   setIsConnected]   = useState(true);
+    const [reducedMotion, setReducedMotion] = useState(false);
 
-    const stopReminder = useCallback(() => {
-        if (reminderRef.current) {
-            clearInterval(reminderRef.current);
-            reminderRef.current = null;
-        }
-    }, []);
+    const { speak, stop }  = useVoice();
+    const { detect }       = useDetection();
+    const { currentMode, nextMode, prevMode, cycleMode } = useModes();
 
-    // ── Boot ──────────────────────────────────────────────────────────────────
+    const cameraRef = useRef(null);
+    const scanAnim  = useRef(new Animated.Value(0)).current;
+    const scanLoop  = useRef(null);
+    const isMounted = useRef(true);
+
     useEffect(() => {
-        (async () => {
-            try { await Camera.requestCameraPermissionsAsync(); } catch (_) {}
-            setTimeout(async () => {
-                await speak('Abserny ready. Double tap anywhere to scan your surroundings.');
-                startReminder();
-            }, 800);
-        })();
-        return () => stopReminder();
+        AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion);
     }, []);
 
-    // ── Scan animation ────────────────────────────────────────────────────────
+    // Network check — no native module needed
     useEffect(() => {
-        if (state === STATES.SCANNING) {
-            Animated.loop(Animated.sequence([
-                Animated.timing(scanAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
-                Animated.timing(scanAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
-            ])).start();
-        } else {
-            scanAnim.stopAnimation();
-            scanAnim.setValue(0);
-        }
-    }, [state]);
-
-    // ── Gemini vision ─────────────────────────────────────────────────────────
-    const detectObjects = useCallback(async () => {
-        if (!cameraRef.current) {
-            console.log('No camera ref');
-            return '';
-        }
-        console.log('Taking photo...');
-        const photo = await cameraRef.current.takePictureAsync({
-            base64: true, quality: 0.15, skipProcessing: true,
-        });
-        console.log('Photo taken, size:', photo.base64.length);
-
-        console.log('Calling Gemini...');
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{
-                        parts: [
-                            { inline_data: { mime_type: 'image/jpeg', data: photo.base64 } },
-                            { text: 'List the main objects you see. Reply with ONLY a short comma-separated list, max 5 items, nothing else.' },
-                        ]
-                    }]
-                }),
-            }
-        );
-        const data = await response.json();
-        console.log('Gemini raw:', JSON.stringify(data).slice(0, 200));
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-        return text.trim();
+        const check = () => {
+            fetch('https://dns.google', { method: 'HEAD' })
+                .then(() => setIsConnected(true))
+                .catch(() => setIsConnected(false));
+        };
+        check();
+        const iv = setInterval(check, 15000);
+        return () => clearInterval(iv);
     }, []);
 
-    // ── Main scan flow ────────────────────────────────────────────────────────
-    const runScan = useCallback(async () => {
-        if (stateRef.current !== STATES.IDLE) return;
+    useEffect(() => {
+        if (!permission) return;
 
-        stopReminder();
-        setState(STATES.SCANNING);
-        setFeedback('opening camera...');
-        Vibration.vibrate([0, 60, 40, 60]);
-
-        await speak('Scanning. Please hold still.');
-        await new Promise(r => setTimeout(r, 1500));
-
-        setFeedback('analyzing image...');
-        await speak('Analyzing what I see.');
-
-        let result = '';
-        try {
-            result = await Promise.race([
-                detectObjects(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
-            ]);
-        } catch (e) {
-            console.log('Detection error:', e.message);
-        }
-
-        if (!result) {
-            setFeedback('could not detect anything');
-            await speak('Sorry, I could not detect anything. Please try again.');
-            setState(STATES.IDLE);
-            setFeedback('double tap anywhere to scan');
-            startReminder();
+        if (!permission.granted) {
+            requestPermission().then(result => {
+                if (!result.granted) {
+                    speak('Camera permission is required. Please allow camera access in your phone settings.', 'high');
+                }
+            });
             return;
         }
 
-        setState(STATES.SPEAKING);
-        setFeedback(result);
-        await speak(`I can see ${result}`);
+        const t = setTimeout(() => {
+            if (!isMounted.current) return;
+            setAppState(STATE.READY);
+            speak(
+                `Abserny ready. ${currentMode.label}. ` +
+                    `${isConnected ? '' : 'Offline mode. '}` +
+                    `${currentMode.instruction}`,
+                'high'
+            );
+        }, 800);
 
-        setState(STATES.IDLE);
-        setFeedback('double tap anywhere to scan');
-        startReminder();
-    }, [detectObjects, startReminder, stopReminder]);
+        return () => clearTimeout(t);
+    }, [permission?.granted]);
 
-    // ── Gesture ───────────────────────────────────────────────────────────────
-    const panResponder = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => true,
-            onPanResponderGrant: () => {
-                const now = Date.now();
-                if (now - lastTap.current < 300) runScan();
-                lastTap.current = now;
-            },
-        })
-    ).current;
+    useEffect(() => {
+        return () => { isMounted.current = false; };
+    }, []);
 
-    const scanOpacity = scanAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] });
-    const isScanning  = state === STATES.SCANNING;
-    const isSpeaking  = state === STATES.SPEAKING;
+    const startScanAnim = useCallback(() => {
+        if (reducedMotion) return;
+        scanAnim.setValue(0);
+        scanLoop.current = Animated.loop(
+            Animated.sequence([
+                Animated.timing(scanAnim, { toValue: 1, duration: 1600, useNativeDriver: true }),
+                Animated.timing(scanAnim, { toValue: 0, duration: 1600, useNativeDriver: true }),
+            ])
+        );
+        scanLoop.current.start();
+    }, [reducedMotion, scanAnim]);
+
+    const stopScanAnim = useCallback(() => {
+        scanLoop.current?.stop();
+        scanAnim.setValue(0);
+    }, [scanAnim]);
+
+    const runScan = useCallback(async () => {
+        if (appState !== STATE.READY) return;
+        if (!cameraRef.current) return;
+
+        setAppState(STATE.SCANNING);
+        startScanAnim();
+        speak('Scanning.', 'high');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
+        try {
+            const photo = await cameraRef.current.takePictureAsync({
+                base64: true,
+                quality: 0.25,
+                skipProcessing: true,
+                shutterSound: false,
+            });
+
+            speak('Analyzing.');
+
+            const { result, source } = await detect(photo.base64, currentMode.id, isConnected);
+
+            if (!isMounted.current) return;
+
+            setLastResult(result);
+            setAppState(STATE.SPEAKING);
+            stopScanAnim();
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+            const prefix = source === 'offline' ? 'Offline. ' : '';
+            speak(prefix + result, 'high');
+
+            setTimeout(() => {
+                if (isMounted.current) setAppState(STATE.READY);
+            }, (result.length / 10) * 1000 + 2500);
+
+        } catch (err) {
+            if (!isMounted.current) return;
+            stopScanAnim();
+            setAppState(STATE.ERROR);
+            speak("Couldn't scan. Please try again.", 'high');
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            setTimeout(() => { if (isMounted.current) setAppState(STATE.READY); }, 2000);
+        }
+    }, [appState, currentMode, isConnected, detect, speak, startScanAnim, stopScanAnim]);
+
+    const handleRepeat = useCallback(() => {
+        if (!lastResult) { speak('Nothing to repeat.', 'high'); return; }
+        speak(lastResult, 'high');
+        Haptics.selectionAsync();
+    }, [lastResult, speak]);
+
+    const handleNextMode = useCallback(() => {
+        const mode = nextMode();
+        speak(`${mode.label}. ${mode.instruction}`, 'high');
+        Haptics.selectionAsync();
+    }, [nextMode, speak]);
+
+    const handlePrevMode = useCallback(() => {
+        const mode = prevMode();
+        speak(`${mode.label}. ${mode.instruction}`, 'high');
+        Haptics.selectionAsync();
+    }, [prevMode, speak]);
+
+    const handleCycleMode = useCallback(() => {
+        const mode = cycleMode();
+        speak(`${mode.label}. ${mode.instruction}`, 'high');
+        Haptics.selectionAsync();
+    }, [cycleMode, speak]);
+
+    const gestureHandlers = useGestures({
+        onScan:      runScan,
+        onRepeat:    handleRepeat,
+        onCycleMode: handleCycleMode,
+        onNextMode:  handleNextMode,
+        onPrevMode:  handlePrevMode,
+        enabled:     appState === STATE.READY || appState === STATE.SPEAKING,
+    });
+
+    const { height: SCREEN_H } = require('react-native').Dimensions.get('window');
+    const scanLineY = scanAnim.interpolate({
+        inputRange:  [0, 1],
+        outputRange: [SCREEN_H * 0.10, SCREEN_H * 0.88],
+    });
+
+    if (!permission) return <View style={styles.root} />;
+
+    if (!permission.granted) {
+        return (
+            <View style={styles.root} accessibilityLabel="Camera permission required">
+                <Text style={styles.permText}>
+                    Camera permission required.{'\n'}
+                    Please allow access in Settings.
+                </Text>
+            </View>
+        );
+    }
+
+    const isScanning = appState === STATE.SCANNING;
+    const isSpeaking = appState === STATE.SPEAKING;
 
     return (
-        <View style={s.root} {...panResponder.panHandlers}>
-            <StatusBar barStyle="light-content" backgroundColor="#000" />
+        <View style={styles.root} {...gestureHandlers}>
+            <StatusBar hidden />
 
-            {(isScanning || isSpeaking) && (
-                <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
-            )}
+            <CameraView
+                ref={cameraRef}
+                style={StyleSheet.absoluteFill}
+                facing="back"
+                accessibilityLabel="Camera view"
+            />
 
-            <View style={[s.overlay, { backgroundColor: isScanning ? 'rgba(0,0,0,0.55)' : '#000' }]} />
+            <View style={styles.overlay} />
+
+            <View style={styles.bracketTL} />
+            <View style={styles.bracketTR} />
+            <View style={styles.bracketBL} />
+            <View style={styles.bracketBR} />
 
             {isScanning && (
-                <>
-                    <Animated.View style={[s.scanLine, { opacity: scanOpacity }]} />
-                    <View style={[s.corner, s.cornerTL]} />
-                    <View style={[s.corner, s.cornerTR]} />
-                    <View style={[s.corner, s.cornerBL]} />
-                    <View style={[s.corner, s.cornerBR]} />
-                </>
+                <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
             )}
 
-            <View style={s.content}>
-                <View style={s.topArea}>
-                    <Text style={s.appName}>ABSERNY</Text>
-                    <Text style={s.tagline}>vision assistant</Text>
+            <View style={styles.topBar}>
+                <Text style={styles.appName} accessibilityRole="header">ABSERNY</Text>
+                <View style={styles.statusRow}>
+                    <View style={[
+                        styles.statusDot,
+                        isScanning && styles.dotScanning,
+                        isSpeaking && styles.dotSpeaking,
+                        appState === STATE.READY && styles.dotReady,
+                    ]} />
+                    <Text style={styles.modeLabel}>{currentMode.label.toUpperCase()}</Text>
+                    {!isConnected && <Text style={styles.offlineBadge}>OFFLINE</Text>}
                 </View>
+            </View>
 
-                <View style={s.centerArea}>
-                    {state === STATES.IDLE && (
-                        <View style={s.idleRing}>
-                            <View style={s.idleDot} />
-                        </View>
-                    )}
-                    {isScanning && (
-                        <Animated.Text style={[s.scanningText, { opacity: scanOpacity }]}>
-                            SCANNING
-                        </Animated.Text>
-                    )}
-                    {isSpeaking && (
-                        <View style={s.speakingDots}>
-                            {[0, 1, 2].map(i => <View key={i} style={s.speakDot} />)}
-                        </View>
-                    )}
-                </View>
-
-                <View style={s.bottomArea}>
-                    <Text style={[s.feedback, isSpeaking && s.feedbackActive]}>
-                        {feedback}
+            <View style={styles.centerArea} pointerEvents="none">
+                {isScanning && (
+                    <Text style={styles.scanningLabel} accessibilityLiveRegion="polite">
+                        SCANNING
                     </Text>
-                    {state === STATES.IDLE && (
-                        <Text style={s.hint}>↑ double tap screen</Text>
-                    )}
-                </View>
+                )}
+                {isSpeaking && (
+                    <View style={styles.speakDots}>
+                        <SpeakDot delay={0} />
+                        <SpeakDot delay={150} />
+                        <SpeakDot delay={300} />
+                    </View>
+                )}
+                {appState === STATE.READY && (
+                    <View style={styles.readyRing} />
+                )}
+            </View>
+
+            <View style={styles.bottomBar}>
+                {lastResult ? (
+                    <Text
+                        style={styles.resultText}
+                        accessibilityLiveRegion="polite"
+                        accessibilityLabel={`Last result: ${lastResult}`}
+                        numberOfLines={3}
+                    >
+                        {lastResult}
+                    </Text>
+                ) : null}
+                <Text style={styles.hintText}>
+                    {appState === STATE.READY ? 'DOUBLE TAP TO SCAN' : ''}
+                </Text>
             </View>
         </View>
     );
 }
 
-const s = StyleSheet.create({
-    root:          { flex: 1, backgroundColor: '#000' },
-    overlay:       { ...StyleSheet.absoluteFillObject },
-    content:       { flex: 1, justifyContent: 'space-between', paddingTop: Platform.OS === 'ios' ? 60 : 48, paddingBottom: 52, paddingHorizontal: 32, zIndex: 10 },
-    scanLine:      { position: 'absolute', left: 40, right: 40, top: '50%', height: 1, backgroundColor: '#00BFFF', zIndex: 5 },
-    corner:        { position: 'absolute', width: 28, height: 28, zIndex: 5 },
-    cornerTL:      { top: 80, left: 32, borderTopWidth: 2, borderLeftWidth: 2, borderColor: '#00BFFF' },
-    cornerTR:      { top: 80, right: 32, borderTopWidth: 2, borderRightWidth: 2, borderColor: '#00BFFF' },
-    cornerBL:      { bottom: 120, left: 32, borderBottomWidth: 2, borderLeftWidth: 2, borderColor: '#00BFFF' },
-    cornerBR:      { bottom: 120, right: 32, borderBottomWidth: 2, borderRightWidth: 2, borderColor: '#00BFFF' },
-    topArea:       { alignItems: 'flex-start' },
-    appName:       { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 6 },
-    tagline:       { color: 'rgba(255,255,255,0.3)', fontSize: 11, letterSpacing: 3, marginTop: 2 },
-    centerArea:    { alignItems: 'center', justifyContent: 'center', flex: 1 },
-    idleRing:      { width: 64, height: 64, borderRadius: 32, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
-    idleDot:       { width: 8, height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.4)' },
-    scanningText:  { color: '#00BFFF', fontSize: 12, fontWeight: '700', letterSpacing: 8 },
-    speakingDots:  { flexDirection: 'row', gap: 8 },
-    speakDot:      { width: 8, height: 8, borderRadius: 4, backgroundColor: '#00BFFF' },
-    bottomArea:    { alignItems: 'center' },
-    feedback:      { color: 'rgba(255,255,255,0.55)', fontSize: 15, textAlign: 'center', lineHeight: 22 },
-    feedbackActive:{ color: '#fff', fontSize: 17 },
-    hint:          { color: 'rgba(255,255,255,0.2)', fontSize: 11, letterSpacing: 2, marginTop: 12 },
+function SpeakDot({ delay }) {
+    const anim = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.delay(delay),
+                Animated.timing(anim, { toValue: -10, duration: 350, useNativeDriver: true }),
+                Animated.timing(anim, { toValue: 0,   duration: 350, useNativeDriver: true }),
+            ])
+        );
+        loop.start();
+        return () => loop.stop();
+    }, []);
+
+    return (
+        <Animated.View style={[styles.speakDot, { transform: [{ translateY: anim }] }]} />
+    );
+}
+
+const CYAN    = '#00BFFF';
+const BRACKET = 28;
+const BW      = 2.5;
+
+const styles = StyleSheet.create({
+    root:    { flex: 1, backgroundColor: '#000' },
+    overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.18)' },
+    permText: { color: '#fff', fontSize: 18, textAlign: 'center', marginTop: 120, paddingHorizontal: 40, lineHeight: 28 },
+
+    bracketTL: { position:'absolute', top:22, left:22,    width:BRACKET, height:BRACKET, borderTopWidth:BW,    borderLeftWidth:BW,  borderColor:CYAN },
+    bracketTR: { position:'absolute', top:22, right:22,   width:BRACKET, height:BRACKET, borderTopWidth:BW,    borderRightWidth:BW, borderColor:CYAN },
+    bracketBL: { position:'absolute', bottom:22, left:22,  width:BRACKET, height:BRACKET, borderBottomWidth:BW, borderLeftWidth:BW,  borderColor:CYAN },
+    bracketBR: { position:'absolute', bottom:22, right:22, width:BRACKET, height:BRACKET, borderBottomWidth:BW, borderRightWidth:BW, borderColor:CYAN },
+
+    scanLine: {
+        position:'absolute', top:0, left:22, right:22, height:1.5,
+        backgroundColor:CYAN, shadowColor:CYAN,
+        shadowOffset:{width:0,height:0}, shadowOpacity:1, shadowRadius:6, elevation:6,
+    },
+
+    topBar:      { position:'absolute', top:52, left:0, right:0, alignItems:'center', gap:6 },
+    appName:     { color:'#fff', fontSize:13, letterSpacing:8, fontWeight:'800' },
+    statusRow:   { flexDirection:'row', alignItems:'center', gap:8 },
+    statusDot:   { width:6, height:6, borderRadius:3, backgroundColor:'rgba(255,255,255,0.3)' },
+    dotReady:    { backgroundColor:'#00C896' },
+    dotScanning: { backgroundColor:CYAN },
+    dotSpeaking: { backgroundColor:'#fff' },
+    modeLabel:   { color:CYAN, fontSize:9, letterSpacing:4 },
+    offlineBadge:{ color:'#FF9F1C', fontSize:9, letterSpacing:3, borderWidth:1, borderColor:'#FF9F1C', paddingHorizontal:6, paddingVertical:1 },
+
+    centerArea:    { ...StyleSheet.absoluteFillObject, alignItems:'center', justifyContent:'center' },
+    readyRing:     { width:56, height:56, borderRadius:28, borderWidth:1, borderColor:'rgba(0,191,255,0.3)' },
+    scanningLabel: { color:CYAN, fontSize:11, letterSpacing:8, fontWeight:'700' },
+    speakDots:     { flexDirection:'row', gap:10, alignItems:'center' },
+    speakDot:      { width:10, height:10, borderRadius:5, backgroundColor:CYAN },
+
+    bottomBar:  { position:'absolute', bottom:52, left:32, right:32, alignItems:'center', gap:12 },
+    resultText: { color:'rgba(255,255,255,0.85)', fontSize:16, textAlign:'center', lineHeight:24 },
+    hintText:   { color:'rgba(255,255,255,0.18)', fontSize:10, letterSpacing:4 },
 });
