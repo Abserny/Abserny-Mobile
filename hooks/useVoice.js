@@ -1,55 +1,52 @@
 /**
  * useVoice.js
- * Speech queue — guarantees utterances never overlap.
- * Exposes: speak(text, priority), stop()
- * Priority 'high' cancels anything playing and speaks immediately.
- * Priority 'normal' queues behind current speech.
+ * Language-aware speech queue. Never overlaps utterances.
+ * Priority 'high' cancels current speech and speaks immediately.
  */
 
 import { useRef, useCallback } from 'react';
 import * as Speech from 'expo-speech';
 
-export function useVoice() {
-  const queue = useRef([]);
-  const speaking = useRef(false);
+export function useVoice(lang = 'en') {
+    const queue    = useRef([]);
+    const speaking = useRef(false);
+    const langRef  = useRef(lang);
+    langRef.current = lang;
 
-  const processQueue = useCallback(() => {
-    if (speaking.current || queue.current.length === 0) return;
-    const text = queue.current.shift();
-    speaking.current = true;
+    const getConfig = useCallback(() => ({
+        language: langRef.current === 'ar' ? 'ar-SA' : 'en-US',
+        rate:     langRef.current === 'ar' ? 0.82 : 0.88,
+        pitch:    1.0,
+    }), []);
 
-    Speech.speak(text, {
-      language: 'en-US',
-      rate: 0.88,
-      pitch: 1.0,
-      onDone: () => {
-        speaking.current = false;
+    const processQueue = useCallback(() => {
+        if (speaking.current || queue.current.length === 0) return;
+        const text = queue.current.shift();
+        speaking.current = true;
+        Speech.speak(text, {
+            ...getConfig(),
+            onDone:  () => { speaking.current = false; processQueue(); },
+            onError: () => { speaking.current = false; processQueue(); },
+        });
+    }, [getConfig]);
+
+    const speak = useCallback((text, priority = 'normal') => {
+        if (!text) return;
+        if (priority === 'high') {
+            Speech.stop();
+            speaking.current = false;
+            queue.current    = [text];
+        } else {
+            queue.current.push(text);
+        }
         processQueue();
-      },
-      onError: () => {
+    }, [processQueue]);
+
+    const stop = useCallback(() => {
+        Speech.stop();
+        queue.current    = [];
         speaking.current = false;
-        processQueue();
-      },
-    });
-  }, []);
+    }, []);
 
-  const speak = useCallback((text, priority = 'normal') => {
-    if (!text) return;
-    if (priority === 'high') {
-      Speech.stop();
-      speaking.current = false;
-      queue.current = [text];
-    } else {
-      queue.current.push(text);
-    }
-    processQueue();
-  }, [processQueue]);
-
-  const stop = useCallback(() => {
-    Speech.stop();
-    queue.current = [];
-    speaking.current = false;
-  }, []);
-
-  return { speak, stop };
+    return { speak, stop };
 }

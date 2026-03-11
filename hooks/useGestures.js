@@ -56,9 +56,9 @@ export function useGestures({ onScan, onRepeat, onCycleMode, onNextMode, onPrevM
     const panResponder = useRef(
         PanResponder.create({
 
-            onStartShouldSetPanResponder: ()      => true,
-            onStartShouldSetPanResponderCapture: () => true,
-            onMoveShouldSetPanResponder: ()       => false,
+            onStartShouldSetPanResponder:        () => enabledRef.current,
+            onStartShouldSetPanResponderCapture: () => enabledRef.current,
+            onMoveShouldSetPanResponder:         () => false,
 
             onPanResponderGrant: (e) => {
                 if (!enabledRef.current) return;
