@@ -1,5 +1,4 @@
 /**
- * App.js — Abserny v3.2
  * - Gesture-driven language onboarding (spoken, no sight required)
  * - Interactive gesture tutorial (first launch only)
  * - Settings overlay (swipe to navigate, double tap to select)
@@ -100,7 +99,6 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     const stateRef    = useRef(STATE.BOOT);
     const bootSpoken  = useRef(false);
 
-    // Pre-warm TTS so first speech fires without Android cold-start delay
     useEffect(() => {
         Speech.speak(' ', { language: lang === 'ar' ? 'ar-SA' : 'en-US', volume: 0 });
     }, []); // eslint-disable-line
@@ -587,7 +585,7 @@ const styles = StyleSheet.create({
     root:          { flex:1, backgroundColor:'#161717' },
     centerContent: { flex:1, alignItems:'center', justifyContent:'center', padding:40 },
     overlay:       { ...StyleSheet.absoluteFillObject, backgroundColor:'#161717' },
-    vignetteBottom:{ position:'absolute', bottom:0, left:0, right:0, height:240, backgroundColor:'rgba(0,0,0,0.55)' },
+    vignetteBottom:{ position:'absolute', bottom:0, left:0, right:0, height:240, backgroundColor:'rgba(22,23,23,0.85)' },
 
     bracketTL: { position:'absolute', top:18, left:18,    width:B, height:B, borderTopWidth:BW,    borderLeftWidth:BW   },
     bracketTR: { position:'absolute', top:18, right:18,   width:B, height:B, borderTopWidth:BW,    borderRightWidth:BW  },
