@@ -19,14 +19,17 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
+import * as Speech from 'expo-speech';
 
 import { useVoice }                              from './hooks/useVoice';
 import { useGestures }                           from './hooks/useGestures';
 import { useDetection }                          from './hooks/useDetection';
 import { useModes, MODES }                       from './hooks/useModes';
 import { useLanguage, MODES_STRINGS, STRINGS }   from './hooks/useLanguage';
-import OnboardingScreen                          from './OnboardingScreen';
+import OnboardingScreen  from './OnboardingScreen';
+import LanguagePicker   from './LanguagePicker';
 import SettingsOverlay                           from './SettingsOverlay';
+import { MODE_ICONS }                            from './AbsernyIcons';
 
 const CYAN    = '#00BFFF';
 const GREEN   = '#00E5A0';
@@ -60,6 +63,8 @@ export default function App() {
     if (!lang || !onboarded) {
         return (
             <OnboardingScreen
+                initialPhase={lang && !onboarded ? 'tutorial' : 'language'}
+                initialLang={lang || 'en'}
                 onComplete={(chosenLang) => {
                     chooseLang(chosenLang);
                     completeOnboarding();
@@ -68,11 +73,11 @@ export default function App() {
         );
     }
 
-    return <MainApp lang={lang} t={t} onResetLanguage={resetLanguage} onResetOnboarding={resetOnboarding} />;
+    return <MainApp lang={lang} t={t} onChooseLang={chooseLang} onResetLanguage={resetLanguage} onResetOnboarding={resetOnboarding} />;
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
-function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
+function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) {
 
     const [permission, requestPermission] = useCameraPermissions();
     const [appState,     setAppState]     = useState(STATE.BOOT);
@@ -82,7 +87,8 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
     const [reducedMo,    setReducedMo]    = useState(false);
     const [autoScan,     setAutoScan]     = useState(false);
     const [scanCount,    setScanCount]    = useState(0);
-    const [showSettings, setShowSettings] = useState(false);
+    const [showSettings,   setShowSettings]   = useState(false);
+    const [showLangPicker, setShowLangPicker] = useState(false);
 
     const { speak, stop }  = useVoice(lang);
     const { detect }       = useDetection();
@@ -93,6 +99,11 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
     const autoTimer   = useRef(null);
     const stateRef    = useRef(STATE.BOOT);
     const bootSpoken  = useRef(false);
+
+    // Pre-warm TTS so first speech fires without Android cold-start delay
+    useEffect(() => {
+        Speech.speak(' ', { language: lang === 'ar' ? 'ar-SA' : 'en-US', volume: 0 });
+    }, []); // eslint-disable-line
 
     // Animations
     const scanLineAnim   = useRef(new Animated.Value(0)).current;
@@ -139,7 +150,7 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
     useEffect(() => {
         if (!permission?.granted || bootSpoken.current) return;
         bootSpoken.current = true;
-        const ms = MODES_STRINGS[lang]?.[currentMode.id] || MODES_STRINGS.en[currentMode.id];
+        const ms = MODES_STRINGS[lang]?.[currentMode.id] ?? MODES_STRINGS.en[currentMode.id];
         setAppState(STATE.READY);
         startPulse();
         speak(t('ready', ms.label, ms.hint), 'high');
@@ -296,9 +307,8 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
 
     const handleChangeLang = useCallback(() => {
         setShowSettings(false);
-        speak(t('lang_restarting'), 'high');
-        setTimeout(() => onResetLanguage(), 800);
-    }, [speak, t, onResetLanguage]);
+        setTimeout(() => setShowLangPicker(true), 400);
+    }, []);
 
     // ── Gestures ──────────────────────────────────────────────────────────────
     const handleRepeat = useCallback(() => {
@@ -308,7 +318,7 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
     }, [lastResult, speak, t]);
 
     const modeAnnounce = useCallback((mode) => {
-        const ms = MODES_STRINGS[lang]?.[mode.id] || MODES_STRINGS.en[mode.id];
+        const ms = (MODES_STRINGS[lang] ?? MODES_STRINGS.en)[mode.id];
         speak(`${ms.label}. ${ms.hint}`, 'high');
         animateMode();
         Haptics.selectionAsync();
@@ -331,7 +341,7 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
         onCycleMode: handleCycleMode,
         onNextMode:  handleNextMode,
         onPrevMode:  handlePrevMode,
-        enabled:     (appState === STATE.READY || appState === STATE.SPEAKING) && !showSettings,
+        enabled:     (appState === STATE.READY || appState === STATE.SPEAKING) && !showSettings && !showLangPicker,
     });
 
     // ── Derived ───────────────────────────────────────────────────────────────
@@ -355,7 +365,12 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
     if (!permission.granted) {
         return (
             <View style={[styles.root, styles.centerContent]}>
-                <Text style={styles.permIcon}>📷</Text>
+                <View style={styles.permIconBox}>
+                    <View style={styles.permCameraBody}>
+                        <View style={styles.permCameraLens} />
+                    </View>
+                    <View style={styles.permCameraBump} />
+                </View>
                 <Text style={styles.permTitle}>{t('perm_title')}</Text>
                 <Text style={styles.permBody}>{t('perm_body')}</Text>
                 <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
@@ -403,17 +418,20 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
 
             {/* Mode pills */}
             <Animated.View style={[styles.modeBar, { transform: [{ translateY: modeAnim }] }]}>
-                {MODES.map((mode, i) => (
-                    <View key={mode.id} style={[
-                        styles.modePill,
-                        i === modeIndex && {
-                            backgroundColor: MODE_COLORS[mode.id] + '22',
-                            borderColor:     MODE_COLORS[mode.id],
-                        },
-                    ]}>
-                        <Text style={styles.modePillIcon}>{mode.icon}</Text>
-                    </View>
-                ))}
+                {MODES.map((mode, i) => {
+                    const ModeIcon = MODE_ICONS[mode.id];
+                    return (
+                        <View key={mode.id} style={[
+                            styles.modePill,
+                            i === modeIndex && {
+                                backgroundColor: MODE_COLORS[mode.id] + '22',
+                                borderColor:     MODE_COLORS[mode.id],
+                            },
+                        ]}>
+                            {ModeIcon && <ModeIcon size={17} color={i === modeIndex ? MODE_COLORS[mode.id] : 'rgba(255,255,255,0.4)'} />}
+                        </View>
+                    );
+                })}
             </Animated.View>
 
             {/* Center */}
@@ -443,7 +461,8 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
                 )}
                 {isError && (
                     <View style={[styles.errorRing, { borderColor: RED }]}>
-                        <Text style={styles.errorX}>✕</Text>
+                        <View style={[styles.errorLine1, { backgroundColor: RED }]} />
+                        <View style={[styles.errorLine2, { backgroundColor: RED }]} />
                     </View>
                 )}
                 {autoScan && isReady && (
@@ -486,8 +505,8 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
                         {isReady
                             ? autoScan ? t('hint_auto') : t('hint_ready')
                             : isScanning ? t('hint_scanning')
-                            : isSpeaking ? t('hint_speaking')
-                            : ''}
+                                : isSpeaking ? t('hint_speaking')
+                                    : ''}
                     </Text>
                 </View>
 
@@ -507,6 +526,15 @@ function MainApp({ lang, t, onResetLanguage, onResetOnboarding }) {
                     onRepeatTour={handleRepeatTour}
                     onChangeLang={handleChangeLang}
                     onClose={closeSettings}
+                />
+            )}
+
+            {showLangPicker && (
+                <LanguagePicker
+                    onComplete={(chosenLang) => {
+                        setShowLangPicker(false);
+                        onChooseLang(chosenLang);
+                    }}
                 />
             )}
         </View>
@@ -581,7 +609,6 @@ const styles = StyleSheet.create({
 
     modeBar:      { position:'absolute', top:106, left:0, right:0, flexDirection:'row', justifyContent:'center', gap:8 },
     modePill:     { width:38, height:38, borderRadius:19, alignItems:'center', justifyContent:'center', borderWidth:1, borderColor:'rgba(255,255,255,0.1)', backgroundColor:'rgba(255,255,255,0.04)' },
-    modePillIcon: { fontSize:17 },
 
     center:      { ...StyleSheet.absoluteFillObject, alignItems:'center', justifyContent:'center' },
     readyRing:   { width:72, height:72, borderRadius:36, borderWidth:1.5, alignItems:'center', justifyContent:'center' },
@@ -592,7 +619,13 @@ const styles = StyleSheet.create({
     waveRow:     { flexDirection:'row', gap:5, alignItems:'center', height:40 },
     waveBar:     { width:4, borderRadius:2 },
     errorRing:   { width:56, height:56, borderRadius:28, borderWidth:1.5, alignItems:'center', justifyContent:'center', backgroundColor:'rgba(255,68,85,0.1)' },
-    errorX:      { color:RED, fontSize:22, fontWeight:'700' },
+    errorLine1:  { position:'absolute', width:22, height:2.5, borderRadius:1.25, transform:[{rotate:'45deg'}] },
+    errorLine2:  { position:'absolute', width:22, height:2.5, borderRadius:1.25, transform:[{rotate:'-45deg'}] },
+
+    permIconBox:      { width:72, height:72, alignItems:'center', justifyContent:'center', marginBottom:20 },
+    permCameraBody:   { width:56, height:42, borderRadius:8, borderWidth:3, borderColor:CYAN, alignItems:'center', justifyContent:'center' },
+    permCameraLens:   { width:18, height:18, borderRadius:9, borderWidth:3, borderColor:CYAN },
+    permCameraBump:   { position:'absolute', top:10, width:18, height:9, borderRadius:4, backgroundColor:CYAN },
     autoBadge:   { position:'absolute', top:-58, paddingHorizontal:12, paddingVertical:4, borderRadius:4, borderWidth:1, backgroundColor:'rgba(255,176,32,0.1)' },
     autoText:    { fontSize:9, letterSpacing:4, fontWeight:'700' },
 
@@ -611,7 +644,6 @@ const styles = StyleSheet.create({
     ghintIcon:    { color:'rgba(255,255,255,0.22)', fontSize:10 },
     ghintLabel:   { color:'rgba(255,255,255,0.14)', fontSize:8, letterSpacing:2 },
 
-    permIcon:    { fontSize:48, marginBottom:20 },
     permTitle:   { color:'#fff', fontSize:22, fontWeight:'700', marginBottom:12, textAlign:'center' },
     permBody:    { color:'rgba(255,255,255,0.55)', fontSize:16, textAlign:'center', lineHeight:24, marginBottom:32 },
     permBtn:     { backgroundColor:CYAN, paddingHorizontal:32, paddingVertical:14, borderRadius:8, minWidth:180, alignItems:'center' },
