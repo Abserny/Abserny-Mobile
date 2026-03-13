@@ -43,6 +43,7 @@ const TUTORIAL_STEPS = {
         { id: 'swipe',       text: 'Swipe right or left to change modes. Try it now.',           waitFor: 'swipe'      },
         { id: 'swipe_done',  text: 'Good. Four modes: Scene, Object, Read, People.',             waitFor: null         },
         { id: 'triple_tap',  text: 'Triple tap to open settings. Tap three times now.',          waitFor: 'tripleTap'  },
+        { id: 'swipe_up',    text: 'Swipe up to toggle Watch mode. It scans continuously and speaks when something changes. Try it.',  waitFor: 'swipeUp'    },
         { id: 'finish',      text: 'You know all the gestures. Double tap now to start.',        waitFor: 'doubleTap'  },
     ],
     ar: [
@@ -54,6 +55,7 @@ const TUTORIAL_STEPS = {
         { id: 'swipe',       text: 'مرر يميناً أو يساراً لتغيير الوضع. جرّب الآن.',               waitFor: 'swipe'      },
         { id: 'swipe_done',  text: 'جيد. أربعة أوضاع: مشهد، أشياء، قراءة، أشخاص.',               waitFor: null         },
         { id: 'triple_tap',  text: 'انقر ثلاث مرات لفتح الإعدادات. جرّب الآن.',                   waitFor: 'tripleTap'  },
+        { id: 'swipe_up',    text: 'مرر لأعلى لتفعيل وضع المراقبة. يمسح تلقائياً ويتحدث عند التغيير. جرّب الآن.',  waitFor: 'swipeUp'    },
         { id: 'finish',      text: 'تعلمت كل الإيماءات. انقر مرتين الآن للبدء.',                  waitFor: 'doubleTap'  },
     ],
 };
@@ -153,6 +155,11 @@ export default function OnboardingScreen({
 
     // runStep as ref — never stale inside onDone
     const runStepRef = useRef(null);
+
+    // FIX: store gesture handlers in refs so the PanResponder (created once)
+    // always calls the current version, not the one from the initial render.
+    const onGestureDetectedRef = useRef(null);
+    const confirmLangRef       = useRef(null);
     runStepRef.current = (stepIndex, currentLang) => {
         const steps = TUTORIAL_STEPS[currentLang] ?? TUTORIAL_STEPS.en;
         if (stepIndex >= steps.length) return;
@@ -212,6 +219,7 @@ export default function OnboardingScreen({
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setTimeout(() => runStepRef.current(tutStepRef.current + 1, currentLang), 250);
     };
+    onGestureDetectedRef.current = onGestureDetected;
 
     const animateLangCard = (code) => {
         Animated.parallel([
@@ -242,6 +250,7 @@ export default function OnboardingScreen({
             });
         }, 500);
     };
+    confirmLangRef.current = confirmLang;
 
     useEffect(() => {
         Speech.speak(' ', { language: initialLang==='ar' ? 'ar-SA' : 'en-US', volume: 0 });
@@ -273,7 +282,7 @@ export default function OnboardingScreen({
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
                 if (phaseRef.current === 'language') {
                     speakNow('Swipe right for English. Swipe left for Arabic. Double tap to confirm.', 'en-US');
-                } else { onGestureDetected('longPress'); }
+                } else { onGestureDetectedRef.current('longPress'); }
             }, 700);
         },
         onPanResponderRelease: (e) => {
@@ -281,6 +290,12 @@ export default function OnboardingScreen({
             if (longFired.current) return;
             const dx = e.nativeEvent.pageX - startPos.current.x;
             const dy = e.nativeEvent.pageY - startPos.current.y;
+            // Swipe UP — watch mode tutorial step
+            if (dy < -80 && Math.abs(dy) > Math.abs(dx) * 1.3) {
+                tapCount.current = 0; clearTimeout(tapTimer.current);
+                if (phaseRef.current === 'tutorial') { onGestureDetectedRef.current('swipeUp'); }
+                return;
+            }
             if (Math.abs(dx) >= 55 && Math.abs(dx) > Math.abs(dy) * 1.2) {
                 tapCount.current = 0; clearTimeout(tapTimer.current);
                 if (phaseRef.current === 'language') {
@@ -293,7 +308,7 @@ export default function OnboardingScreen({
                         code==='en' ? 'en-US' : 'ar-SA', code==='en' ? 0.88 : 0.82
                     );
                     Haptics.selectionAsync();
-                } else { onGestureDetected('swipe'); }
+                } else { onGestureDetectedRef.current('swipe'); }
                 return;
             }
             if (Math.abs(dx) > 20 || Math.abs(dy) > 20) return;
@@ -301,14 +316,14 @@ export default function OnboardingScreen({
             clearTimeout(tapTimer.current);
             if (tapCount.current >= 3) {
                 tapCount.current = 0;
-                if (phaseRef.current === 'tutorial') onGestureDetected('tripleTap');
+                if (phaseRef.current === 'tutorial') onGestureDetectedRef.current('tripleTap');
                 return;
             }
             tapTimer.current = setTimeout(() => {
                 const count = tapCount.current; tapCount.current = 0;
                 if (count === 2) {
-                    if (phaseRef.current === 'language') confirmLang();
-                        else onGestureDetected('doubleTap');
+                    if (phaseRef.current === 'language') confirmLangRef.current();
+                        else onGestureDetectedRef.current('doubleTap');
                 } else if (count === 1 && phaseRef.current === 'language') {
                     const code = selectedLangRef.current;
                     speakNow(

@@ -2,9 +2,16 @@
  * useModes.js
  * Manages the 4 detection modes. Returns current mode,
  * next/prev/cycle functions, and mode label for voice announcement.
+ *
+ * Fix: nextMode/prevMode now compute index once and use it consistently,
+ * eliminating the stale-closure mismatch between setModeIndex and the
+ * returned MODES entry.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const KEY_MODE = 'abserny_mode_index';
 
 export const MODES = [
     {
@@ -36,17 +43,36 @@ export const MODES = [
 export function useModes() {
     const [modeIndex, setModeIndex] = useState(0);
 
+    // Load persisted mode on mount — useEffect (not useState) for async work
+    useEffect(() => {
+        AsyncStorage.getItem(KEY_MODE)
+            .then(val => {
+                if (val !== null) {
+                    const idx = parseInt(val, 10);
+                    if (!isNaN(idx) && idx >= 0 && idx < MODES.length) {
+                        setModeIndex(idx);
+                    }
+                }
+            })
+            .catch(() => {});
+    }, []);
+
     const currentMode = MODES[modeIndex];
 
+    // FIX: compute next index once and use it for both setModeIndex and return,
+    // so the spoken announcement always matches the mode that was actually set.
     const nextMode = useCallback(() => {
-        setModeIndex(i => (i + 1) % MODES.length);
-        return MODES[(modeIndex + 1) % MODES.length];
+        const next = (modeIndex + 1) % MODES.length;
+        setModeIndex(next);
+        AsyncStorage.setItem(KEY_MODE, String(next)).catch(() => {});
+        return MODES[next];
     }, [modeIndex]);
 
     const prevMode = useCallback(() => {
-        const idx = (modeIndex - 1 + MODES.length) % MODES.length;
-        setModeIndex(idx);
-        return MODES[idx];
+        const prev = (modeIndex - 1 + MODES.length) % MODES.length;
+        setModeIndex(prev);
+        AsyncStorage.setItem(KEY_MODE, String(prev)).catch(() => {});
+        return MODES[prev];
     }, [modeIndex]);
 
     const cycleMode = useCallback(() => {

@@ -2,6 +2,12 @@
  * useLanguage.js
  * Stores language choice + onboarding completion in AsyncStorage.
  * Provides t() translation, mode strings, and Gemini prompts.
+ *
+ * Fixes:
+ *  1. resetLanguage now also clears the persisted mode index (abserny_mode_index)
+ *     so a full reset truly starts fresh.
+ *  2. t() is null-safe — if called while lang is still null (loading state)
+ *     it falls back to English rather than returning the key string.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -9,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY_LANG       = 'abserny_language';
 const KEY_ONBOARDED  = 'abserny_onboarded';
+const KEY_MODE       = 'abserny_mode_index'; // kept in sync on full reset
 
 // ── All UI + speech strings ───────────────────────────────────────────────────
 export const STRINGS = {
@@ -63,6 +70,11 @@ export const STRINGS = {
         gesture_prev:     'prev',
         gesture_next:     'next',
         gesture_cycle:    'cycle',
+        // Watch mode
+        watch_on:         "Watch mode on. I'll speak when something changes.",
+        watch_off:        'Watch mode off.',
+        watch_toggle:     'Watch mode.',
+        hint_watch:       'SWIPE UP TO STOP',
         // Speech config
         speechLang:       'en-US',
         speechRate:       0.88,
@@ -117,6 +129,11 @@ export const STRINGS = {
         gesture_prev:     'السابق',
         gesture_next:     'التالي',
         gesture_cycle:    'تدوير',
+        // Watch mode
+        watch_on:         'وضع المراقبة مفعّل. سأخبرك عند تغيّر المشهد.',
+        watch_off:        'تم إيقاف المراقبة.',
+        watch_toggle:     'وضع المراقبة.',
+        hint_watch:       'مرر لأعلى للإيقاف',
         speechLang:       'ar-SA',
         speechRate:       0.82,
         isRTL:            true,
@@ -176,12 +193,12 @@ export function useLanguage() {
             AsyncStorage.getItem(KEY_LANG),
             AsyncStorage.getItem(KEY_ONBOARDED),
         ])
-        .then(([savedLang, savedOnboarded]) => {
-            setLang(savedLang || null);
-            setOnboarded(savedOnboarded === 'true');
-        })
-        .catch(() => { setLang('en'); setOnboarded(false); })
-        .finally(() => setLoading(false));
+            .then(([savedLang, savedOnboarded]) => {
+                setLang(savedLang || null);
+                setOnboarded(savedOnboarded === 'true');
+            })
+            .catch(() => { setLang('en'); setOnboarded(false); })
+            .finally(() => setLoading(false));
     }, []);
 
     const chooseLang = useCallback(async (code) => {
@@ -200,14 +217,16 @@ export function useLanguage() {
     }, []);
 
     const resetLanguage = useCallback(async () => {
-        await AsyncStorage.removeItem(KEY_LANG);
-        await AsyncStorage.removeItem(KEY_ONBOARDED);
+        // FIX: also clear mode index so a full reset truly starts from scratch
+        await AsyncStorage.multiRemove([KEY_LANG, KEY_ONBOARDED, KEY_MODE]);
         setLang(null);
         setOnboarded(false);
     }, []);
 
+    // FIX: t() is null-safe — lang can be null during the loading phase.
+    // Falls back to English so it never returns the raw key string.
     const t = useCallback((key, ...args) => {
-        const strings = STRINGS[lang] || STRINGS.en;
+        const strings = STRINGS[lang ?? 'en'] || STRINGS.en;
         const val = strings[key];
         if (typeof val === 'function') return val(...args);
         return val ?? key;

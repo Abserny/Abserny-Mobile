@@ -45,7 +45,7 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
     useEffect(() => {
         Animated.parallel([
             Animated.timing(backdropOpacity, { toValue:1, duration:260, useNativeDriver:true }),
-                Animated.timing(panelOpacity,    { toValue:1, duration:260, useNativeDriver:true }),
+            Animated.timing(panelOpacity,    { toValue:1, duration:260, useNativeDriver:true }),
             Animated.timing(panelSlide,      { toValue:0, duration:300, useNativeDriver:true }),
             ...rowAnims.map((a, i) =>
                 Animated.timing(a, { toValue:1, duration:220, delay:60+i*60, useNativeDriver:true })
@@ -73,8 +73,14 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
             longTimer.current = setTimeout(() => {
                 longFired.current = true; tapCount.current = 0;
                 clearTimeout(tapTimer.current);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                onCloseRef.current?.();
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                // Re-announce the currently selected item instead of closing —
+                // accidental long-press was silently dismissing the overlay.
+                const items = getItems();
+                speakRef.current(
+                    tRef.current('settings_selected', items[activeRef.current].label),
+                    'high',
+                );
             }, 700);
         },
         onPanResponderRelease: (e) => {

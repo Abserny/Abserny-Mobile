@@ -1,11 +1,11 @@
 /**
- * - Gesture-driven language onboarding (spoken, no sight required)
- * - Interactive gesture tutorial (first launch only)
- * - Settings overlay (swipe to navigate, double tap to select)
- * - Repeat tutorial option in settings
- * - Arabic + English, full RTL support
- * - Gemini online + ML Kit offline
- * - Auto-scan continuous mode
+ *
+ * What's new:
+ *   + Continuous Watch Mode  (swipe up — useWatchMode)
+ *   + expo-network           (reliable connectivity — useNetwork)
+ *   + Watch mode UI          (breathing outer ring, GREEN state, badge, hints)
+ *   + Swipe-up gesture hint in bottom bar
+ *   + All existing features preserved exactly
  */
 
 import React, {
@@ -18,23 +18,28 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import * as Speech from 'expo-speech';
+import * as Speech  from 'expo-speech';
 
 import { useVoice }                              from './hooks/useVoice';
 import { useGestures }                           from './hooks/useGestures';
 import { useDetection }                          from './hooks/useDetection';
 import { useModes, MODES }                       from './hooks/useModes';
-import { useLanguage, MODES_STRINGS, STRINGS }   from './hooks/useLanguage';
-import OnboardingScreen  from './OnboardingScreen';
-import LanguagePicker   from './LanguagePicker';
+import { useLanguage, MODES_STRINGS }            from './hooks/useLanguage';
+import { useNetwork }                            from './hooks/useNetwork';
+import { useWatchMode }                          from './hooks/useWatchMode';
+import OnboardingScreen                          from './OnboardingScreen';
+import LanguagePicker                            from './LanguagePicker';
 import SettingsOverlay                           from './SettingsOverlay';
 import { MODE_ICONS }                            from './AbsernyIcons';
 
-const CYAN    = '#00BFFF';
-const GREEN   = '#00E5A0';
-const AMBER   = '#FFB020';
-const RED     = '#FF4455';
-const PURPLE  = '#A78BFA';
+// ── Colors ────────────────────────────────────────────────────────────────────
+const CYAN   = '#00BFFF';
+const GREEN  = '#00E5A0';
+const AMBER  = '#FFB020';
+const RED    = '#FF4455';
+const PURPLE = '#A78BFA';
+const BG     = '#161717';
+
 const SCREEN_H = Dimensions.get('window').height;
 
 const STATE = {
@@ -54,11 +59,13 @@ const MODE_COLORS = {
 
 // ── Root — decides which screen to show ───────────────────────────────────────
 export default function App() {
-    const { lang, loading, onboarded, chooseLang, completeOnboarding, resetOnboarding, resetLanguage, t } = useLanguage();
+    const {
+        lang, loading, onboarded,
+        chooseLang, completeOnboarding, resetOnboarding, resetLanguage, t,
+    } = useLanguage();
 
-    if (loading) return <View style={{ flex:1, backgroundColor:'#161717' }} />;
+    if (loading) return <View style={{ flex: 1, backgroundColor: BG }} />;
 
-    // Show onboarding if language not chosen OR tutorial not done
     if (!lang || !onboarded) {
         return (
             <OnboardingScreen
@@ -72,38 +79,70 @@ export default function App() {
         );
     }
 
-    return <MainApp lang={lang} t={t} onChooseLang={chooseLang} onResetLanguage={resetLanguage} onResetOnboarding={resetOnboarding} />;
+    return (
+        <MainApp
+            lang={lang} t={t}
+            onChooseLang={chooseLang}
+            onResetLanguage={resetLanguage}
+            onResetOnboarding={resetOnboarding}
+        />
+    );
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) {
 
     const [permission, requestPermission] = useCameraPermissions();
-    const [appState,     setAppState]     = useState(STATE.BOOT);
-    const [lastResult,   setLastResult]   = useState('');
-    const [lastSource,   setLastSource]   = useState('online');
-    const [isConnected,  setIsConnected]  = useState(true);
-    const [reducedMo,    setReducedMo]    = useState(false);
-    const [autoScan,     setAutoScan]     = useState(false);
-    const [scanCount,    setScanCount]    = useState(0);
+    const [appState,       setAppState]       = useState(STATE.BOOT);
+    const [lastResult,     setLastResult]     = useState('');
+    const [lastSource,     setLastSource]     = useState('online');
+    const [reducedMo,      setReducedMo]      = useState(false);
+    const [autoScan,       setAutoScan]       = useState(false);
+    const [scanCount,      setScanCount]      = useState(0);
     const [showSettings,   setShowSettings]   = useState(false);
     const [showLangPicker, setShowLangPicker] = useState(false);
 
     const { speak, stop }  = useVoice(lang);
     const { detect }       = useDetection();
+
+    // Enhancement: speak connectivity changes so blind users know when
+    // the app switches between Gemini (online) and ML Kit (offline) mode.
+    const speakRef = useRef(speak);
+    useEffect(() => { speakRef.current = speak; }, [speak]);
+    const tRef = useRef(t);
+    useEffect(() => { tRef.current = t; }, [t]);
+
+    const { isConnected }  = useNetwork({
+        onConnectivityChange: (connected) => {
+            speakRef.current(
+                connected
+                    ? (lang === 'ar' ? 'عاد الاتصال بالإنترنت.' : 'Back online.')
+                    : (lang === 'ar' ? 'لا يوجد اتصال. وضع بدون إنترنت.' : 'Offline. Using basic mode.'),
+                'high',
+            );
+        },
+    });
     const { currentMode, modeIndex, nextMode, prevMode, cycleMode } = useModes();
 
-    const cameraRef   = useRef(null);
-    const isMounted   = useRef(true);
-    const autoTimer   = useRef(null);
-    const stateRef    = useRef(STATE.BOOT);
-    const bootSpoken  = useRef(false);
+    const cameraRef  = useRef(null);
+    const isMounted  = useRef(true);
+    const autoTimer  = useRef(null);
+    const stateRef   = useRef(STATE.BOOT);
+    const bootSpoken = useRef(false);
 
+    // ── Watch mode ────────────────────────────────────────────────────────────
+    const { watching, frameCount, toggleWatch, stopWatch } = useWatchMode({
+        cameraRef, detect, speak, lang, isConnected,
+    });
+    const watchingRef = useRef(watching);
+    useEffect(() => { watchingRef.current = watching; }, [watching]);
+
+    // TTS prewarm
     useEffect(() => {
         Speech.speak(' ', { language: lang === 'ar' ? 'ar-SA' : 'en-US', volume: 0 });
     }, []); // eslint-disable-line
 
-    // Animations
+    // ── Animations ────────────────────────────────────────────────────────────
     const scanLineAnim   = useRef(new Animated.Value(0)).current;
     const scanLoop       = useRef(null);
     const pulseAnim      = useRef(new Animated.Value(1)).current;
@@ -112,6 +151,8 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     const resultSlide    = useRef(new Animated.Value(20)).current;
     const modeAnim       = useRef(new Animated.Value(0)).current;
     const overlayOpacity = useRef(new Animated.Value(0.18)).current;
+    const watchRingAnim  = useRef(new Animated.Value(0)).current;
+    const watchRingLoop  = useRef(null);
 
     useEffect(() => { stateRef.current = appState; }, [appState]);
     useEffect(() => () => { isMounted.current = false; }, []);
@@ -127,24 +168,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         AccessibilityInfo.isReduceMotionEnabled().then(setReducedMo);
     }, []);
 
-    // Network
-    useEffect(() => {
-        let cancelled = false;
-        const check = async () => {
-            try {
-                const res = await Promise.race([
-                    fetch('https://www.google.com/generate_204'),
-                    new Promise((_, r) => setTimeout(() => r(new Error()), 5000)),
-                ]);
-                if (!cancelled) setIsConnected(res.status === 204 || res.ok);
-            } catch { if (!cancelled) setIsConnected(false); }
-        };
-        check();
-        const iv = setInterval(check, 20000);
-        return () => { cancelled = true; clearInterval(iv); };
-    }, []);
-
-    // Boot — speak immediately when permission granted
+    // Boot
     useEffect(() => {
         if (!permission?.granted || bootSpoken.current) return;
         bootSpoken.current = true;
@@ -152,7 +176,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         setAppState(STATE.READY);
         startPulse();
         speak(t('ready', ms.label, ms.hint), 'high');
-    }, [permission?.granted, lang]);
+    }, [permission?.granted, lang]); // eslint-disable-line
 
     useEffect(() => {
         if (!permission) return;
@@ -161,7 +185,25 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
                 if (!r.granted) speak(t('no_permission'), 'high');
             });
         }
-    }, [permission]);
+    }, [permission]); // eslint-disable-line
+
+    // ── Watch ring animation ──────────────────────────────────────────────────
+    useEffect(() => {
+        if (watching) {
+            watchRingLoop.current?.stop();
+            watchRingLoop.current = Animated.loop(
+                Animated.sequence([
+                    Animated.timing(watchRingAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
+                    Animated.timing(watchRingAnim, { toValue: 0, duration: 2000, useNativeDriver: true }),
+                ]),
+            );
+            watchRingLoop.current.start();
+        } else {
+            watchRingLoop.current?.stop();
+            watchRingAnim.setValue(0);
+        }
+        return () => watchRingLoop.current?.stop();
+    }, [watching]); // eslint-disable-line
 
     // ── Pulse ─────────────────────────────────────────────────────────────────
     const startPulse = useCallback(() => {
@@ -171,7 +213,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
             Animated.sequence([
                 Animated.timing(pulseAnim, { toValue: 1.18, duration: 1300, useNativeDriver: true }),
                 Animated.timing(pulseAnim, { toValue: 1.0,  duration: 1300, useNativeDriver: true }),
-            ])
+            ]),
         );
         pulseLoop.current.start();
     }, [reducedMo, pulseAnim]);
@@ -181,7 +223,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         pulseAnim.setValue(1);
     }, [pulseAnim]);
 
-    // ── Scan anim ─────────────────────────────────────────────────────────────
+    // ── Scan animation ────────────────────────────────────────────────────────
     const startScanAnim = useCallback(() => {
         if (reducedMo) return;
         scanLineAnim.setValue(0);
@@ -189,7 +231,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
             Animated.sequence([
                 Animated.timing(scanLineAnim, { toValue: 1, duration: 1400, useNativeDriver: true }),
                 Animated.timing(scanLineAnim, { toValue: 0, duration: 1400, useNativeDriver: true }),
-            ])
+            ]),
         );
         scanLoop.current.start();
         Animated.timing(overlayOpacity, { toValue: 0.38, duration: 300, useNativeDriver: false }).start();
@@ -264,7 +306,8 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
                 if (isMounted.current) { setAppState(STATE.READY); startPulse(); }
             }, 1800);
         }
-    }, [currentMode, isConnected, lang, detect, speak, t, startScanAnim, stopScanAnim, startPulse, stopPulse, animateResult]);
+    }, [currentMode, isConnected, lang, detect, speak, t,
+            startScanAnim, stopScanAnim, startPulse, stopPulse, animateResult]);
 
     // ── Auto-scan ─────────────────────────────────────────────────────────────
     const toggleAutoScan = useCallback(() => {
@@ -279,7 +322,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     useEffect(() => {
         if (autoScan) {
             autoTimer.current = setInterval(() => {
-                if (stateRef.current === STATE.READY) runScan();
+                if (stateRef.current === STATE.READY && !watchingRef.current) runScan();
             }, 4000);
         } else {
             clearInterval(autoTimer.current);
@@ -287,11 +330,15 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         return () => clearInterval(autoTimer.current);
     }, [autoScan, runScan]);
 
-    // ── Settings ──────────────────────────────────────────────────────────────
-    const openSettings = useCallback(() => {
-        setShowSettings(true);
-    }, []);
+    // ── Watch toggle ──────────────────────────────────────────────────────────
+    const handleWatchToggle = useCallback(() => {
+        // Stop auto-scan if running — they're mutually exclusive
+        if (autoScan) setAutoScan(false);
+        toggleWatch();
+    }, [toggleWatch, autoScan]);
 
+    // ── Settings ──────────────────────────────────────────────────────────────
+    const openSettings  = useCallback(() => setShowSettings(true), []);
     const closeSettings = useCallback(() => {
         setShowSettings(false);
         speak(t('settings_closed'), 'high');
@@ -308,7 +355,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         setTimeout(() => setShowLangPicker(true), 400);
     }, []);
 
-    // ── Gestures ──────────────────────────────────────────────────────────────
+    // ── Gesture handlers ──────────────────────────────────────────────────────
     const handleRepeat = useCallback(() => {
         if (!lastResult) { speak(t('repeat_empty'), 'high'); return; }
         speak(lastResult, 'high');
@@ -325,54 +372,72 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     const handleNextMode  = useCallback(() => modeAnnounce(nextMode()),  [nextMode,  modeAnnounce]);
     const handlePrevMode  = useCallback(() => modeAnnounce(prevMode()),  [prevMode,  modeAnnounce]);
     const handleCycleMode = useCallback(() => {
-        // Triple tap: if ready state = open settings, else cycle mode
-        if (stateRef.current === STATE.READY && !autoScan) {
-            openSettings();
-        } else {
-            modeAnnounce(cycleMode());
-        }
+        if (stateRef.current === STATE.READY && !autoScan) openSettings();
+            else modeAnnounce(cycleMode());
     }, [cycleMode, modeAnnounce, openSettings, autoScan]);
 
+    // Double tap: if watching → stop watch. If speaking → replay result
+    // (gives blind users confirmation the app is responsive, not frozen).
+    // Otherwise scan or toggle auto.
+    const handleDoubleTap = useCallback(() => {
+        if (watching) { stopWatch(); return; }
+        if (autoScan) { toggleAutoScan(); return; }
+        if (stateRef.current === STATE.SPEAKING && lastResult) {
+            speak(lastResult, 'high');
+            return;
+        }
+        runScan();
+    }, [watching, stopWatch, autoScan, toggleAutoScan, lastResult, speak, runScan]);
+
     const gestureHandlers = useGestures({
-        onScan:      autoScan ? toggleAutoScan : runScan,
-        onRepeat:    handleRepeat,
-        onCycleMode: handleCycleMode,
-        onNextMode:  handleNextMode,
-        onPrevMode:  handlePrevMode,
-        enabled:     (appState === STATE.READY || appState === STATE.SPEAKING) && !showSettings && !showLangPicker,
+        onScan:        handleDoubleTap,
+        onRepeat:      handleRepeat,
+        onCycleMode:   handleCycleMode,
+        onNextMode:    handleNextMode,
+        onPrevMode:    handlePrevMode,
+        onWatchToggle: handleWatchToggle,
+        enabled: (appState === STATE.READY || appState === STATE.SPEAKING || watching)
+            && !showSettings && !showLangPicker,
     });
 
     // ── Derived ───────────────────────────────────────────────────────────────
-    const modeColor  = MODE_COLORS[currentMode.id] || CYAN;
-    const isRTL      = lang === 'ar';
-    const isScanning = appState === STATE.SCANNING;
-    const isSpeaking = appState === STATE.SPEAKING;
-    const isReady    = appState === STATE.READY;
-    const isError    = appState === STATE.ERROR;
+    const modeColor   = MODE_COLORS[currentMode.id] || CYAN;
+    const activeColor = watching ? GREEN : modeColor;
+    const isRTL       = lang === 'ar';
+    const isScanning  = appState === STATE.SCANNING;
+    const isSpeaking  = appState === STATE.SPEAKING;
+    const isReady     = appState === STATE.READY;
+    const isError     = appState === STATE.ERROR;
+    const modeStrings = MODES_STRINGS[lang] || MODES_STRINGS.en;
 
     const scanLineY = scanLineAnim.interpolate({
         inputRange:  [0, 1],
         outputRange: [SCREEN_H * 0.08, SCREEN_H * 0.90],
     });
 
-    const modeStrings = MODES_STRINGS[lang] || MODES_STRINGS.en;
+    const watchRingOpacity = watchRingAnim.interpolate({
+        inputRange: [0, 1], outputRange: [0.25, 0.75],
+    });
+    const watchRingScale = watchRingAnim.interpolate({
+        inputRange: [0, 1], outputRange: [1.0, 1.15],
+    });
 
     // ── Permission screen ─────────────────────────────────────────────────────
-    if (!permission) return <View style={styles.root} />;
+    if (!permission) return <View style={s.root} />;
 
     if (!permission.granted) {
         return (
-            <View style={[styles.root, styles.centerContent]}>
-                <View style={styles.permIconBox}>
-                    <View style={styles.permCameraBody}>
-                        <View style={styles.permCameraLens} />
+            <View style={[s.root, s.centerContent]}>
+                <View style={s.permIconBox}>
+                    <View style={s.permCameraBody}>
+                        <View style={s.permCameraLens} />
                     </View>
-                    <View style={styles.permCameraBump} />
+                    <View style={s.permCameraBump} />
                 </View>
-                <Text style={styles.permTitle}>{t('perm_title')}</Text>
-                <Text style={styles.permBody}>{t('perm_body')}</Text>
-                <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
-                    <Text style={styles.permBtnText}>{t('perm_button')}</Text>
+                <Text style={s.permTitle}>{t('perm_title')}</Text>
+                <Text style={s.permBody}>{t('perm_body')}</Text>
+                <TouchableOpacity style={s.permBtn} onPress={requestPermission}>
+                    <Text style={s.permBtnText}>{t('perm_button')}</Text>
                 </TouchableOpacity>
             </View>
         );
@@ -380,111 +445,177 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
 
     // ── Main render ───────────────────────────────────────────────────────────
     return (
-        <View style={styles.root} {...gestureHandlers}>
+        <View style={s.root} {...gestureHandlers}>
             <StatusBar hidden />
 
+            {/* Camera */}
             <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
-            <Animated.View style={[styles.overlay, { opacity: overlayOpacity }]} />
-            <View style={styles.vignetteBottom} />
 
-            {/* Brackets */}
+            {/* Overlay dim */}
+            <Animated.View style={[s.overlay, { opacity: overlayOpacity }]} />
+
+            {/* Bottom vignette */}
+            <View style={s.vignetteBottom} />
+
+            {/* Corner brackets — shift to GREEN in watch mode */}
             {['TL','TR','BL','BR'].map(pos => (
-                <View key={pos} style={[styles['bracket'+pos], { borderColor: modeColor }]} />
+                <View key={pos} style={[
+                    s['bracket' + pos],
+                    { borderColor: watching ? GREEN + '70' : modeColor + '80' },
+                ]} />
             ))}
 
             {/* Scan line */}
             {isScanning && (
                 <Animated.View style={[
-                    styles.scanLine,
+                    s.scanLine,
                     { backgroundColor: modeColor, shadowColor: modeColor },
                     { transform: [{ translateY: scanLineY }] },
                 ]} />
             )}
 
-            {/* Top bar */}
-            <View style={[styles.topBar, isRTL && styles.rowReverse]}>
-                <Image source={require('./assets/logorm.png')} style={styles.logo} accessibilityLabel="Abserny" />
-                <View style={[styles.topRight, isRTL && styles.rowReverse]}>
-                    <View style={[styles.connDot, { backgroundColor: isConnected ? GREEN : AMBER }]} />
-                    {scanCount > 0 && <Text style={styles.scanCount}>{scanCount}</Text>}
-                    {/* Settings hint */}
-                    <Text style={styles.settingsHint}>
-                        {isRTL ? '···' : '···'}
-                    </Text>
+            {/* ── TOP BAR ─────────────────────────────────────────────────── */}
+            <View style={[s.topBar, isRTL && s.rowReverse]}>
+                <Image
+                    source={require('./assets/logorm.png')}
+                    style={s.logo}
+                    accessibilityLabel="Abserny"
+                />
+                <View style={[s.topRight, isRTL && s.rowReverse]}>
+                    <View style={[s.connDot, { backgroundColor: isConnected ? GREEN : AMBER }]} />
+                    {scanCount > 0 && <Text style={s.scanCount}>{scanCount}</Text>}
+                    <Text style={s.settingsHint}>···</Text>
                 </View>
             </View>
 
-            {/* Mode pills */}
-            <Animated.View style={[styles.modeBar, { transform: [{ translateY: modeAnim }] }]}>
+            {/* ── MODE PILLS ──────────────────────────────────────────────── */}
+            <Animated.View style={[s.modeBar, { transform: [{ translateY: modeAnim }] }]}>
                 {MODES.map((mode, i) => {
                     const ModeIcon = MODE_ICONS[mode.id];
+                    const active   = i === modeIndex;
                     return (
                         <View key={mode.id} style={[
-                            styles.modePill,
-                            i === modeIndex && {
+                            s.modePill,
+                            active && {
                                 backgroundColor: MODE_COLORS[mode.id] + '22',
                                 borderColor:     MODE_COLORS[mode.id],
                             },
+                            // Dim pills during watch mode
+                            watching && !active && { opacity: 0.35 },
                         ]}>
-                            {ModeIcon && <ModeIcon size={17} color={i === modeIndex ? MODE_COLORS[mode.id] : 'rgba(255,255,255,0.4)'} />}
+                            {ModeIcon && (
+                                <ModeIcon
+                                    size={17}
+                                    color={active
+                                        ? (watching ? GREEN : MODE_COLORS[mode.id])
+                                        : 'rgba(255,255,255,0.35)'
+                                    }
+                                />
+                            )}
                         </View>
                     );
                 })}
             </Animated.View>
 
-            {/* Center */}
-            <View style={styles.center} pointerEvents="none">
+            {/* ── CENTER STATE ────────────────────────────────────────────── */}
+            <View style={s.center} pointerEvents="none">
+
+                {/* Breathing watch ring — outermost */}
+                {watching && (
+                    <Animated.View style={[s.watchRing, {
+                        borderColor: GREEN,
+                        opacity:     watchRingOpacity,
+                        transform:   [{ scale: watchRingScale }],
+                    }]} />
+                )}
+
+                {/* Ready pulse ring */}
                 {isReady && (
                     <Animated.View style={[
-                        styles.readyRing,
-                        { borderColor: modeColor + '50', transform: [{ scale: pulseAnim }] },
+                        s.readyRing,
+                        {
+                            borderColor: activeColor + '55',
+                            transform:   [{ scale: pulseAnim }],
+                        },
                     ]}>
-                        <View style={[styles.readyDot, { backgroundColor: modeColor }]} />
+                        <View style={[s.readyDot, { backgroundColor: activeColor }]} />
                     </Animated.View>
                 )}
+
+                {/* Scanning ring */}
                 {isScanning && (
-                    <View style={styles.scanningBox}>
+                    <View style={s.scanningBox}>
                         <ScanRing color={modeColor} />
-                        <Text style={[styles.scanLabel, { color: modeColor }]}>
+                        <Text style={[s.scanLabel, { color: modeColor }]}>
                             {isRTL ? 'مسح' : 'SCANNING'}
                         </Text>
                     </View>
                 )}
+
+                {/* Speaking waveform */}
                 {isSpeaking && (
-                    <View style={styles.waveRow}>
-                        {[0,120,240,120,0].map((delay, i) => (
-                            <WaveBar key={i} color={modeColor} delay={delay} />
+                    <View style={s.waveRow}>
+                        {[0, 120, 240, 120, 0].map((delay, i) => (
+                            <WaveBar key={i} color={activeColor} delay={delay} />
                         ))}
                     </View>
                 )}
+
+                {/* Error */}
                 {isError && (
-                    <View style={[styles.errorRing, { borderColor: RED }]}>
-                        <View style={[styles.errorLine1, { backgroundColor: RED }]} />
-                        <View style={[styles.errorLine2, { backgroundColor: RED }]} />
+                    <View style={[s.errorRing, { borderColor: RED }]}>
+                        <View style={[s.errorLine1, { backgroundColor: RED }]} />
+                        <View style={[s.errorLine2, { backgroundColor: RED }]} />
                     </View>
                 )}
-                {autoScan && isReady && (
-                    <View style={[styles.autoBadge, { borderColor: AMBER }]}>
-                        <Text style={[styles.autoText, { color: AMBER }]}>
+
+                {/* AUTO badge */}
+                {autoScan && isReady && !watching && (
+                    <View style={[s.stateBadge, {
+                        borderColor:     AMBER,
+                        backgroundColor: AMBER + '12',
+                        top: -62,
+                    }]}>
+                        <Text style={[s.stateBadgeText, { color: AMBER }]}>
                             {isRTL ? 'تلقائي' : 'AUTO'}
+                        </Text>
+                    </View>
+                )}
+
+                {/* WATCH badge with live dot */}
+                {watching && (
+                    <View style={[s.stateBadge, {
+                        borderColor:     GREEN,
+                        backgroundColor: GREEN + '12',
+                        top: -62,
+                        flexDirection: 'row',
+                        gap: 6,
+                    }]}>
+                        <LiveDot color={GREEN} />
+                        <Text style={[s.stateBadgeText, { color: GREEN }]}>
+                            {isRTL ? 'مراقبة' : 'WATCH'}
                         </Text>
                     </View>
                 )}
             </View>
 
-            {/* Bottom */}
-            <View style={styles.bottom}>
+            {/* ── BOTTOM ──────────────────────────────────────────────────── */}
+            <View style={s.bottom}>
+
+                {/* Offline source badge */}
                 {lastResult && lastSource === 'offline' && (
-                    <View style={styles.sourceBadge}>
-                        <View style={[styles.sourceDot, { backgroundColor: AMBER }]} />
-                        <Text style={[styles.sourceTxt, { color: AMBER }]}>ML KIT</Text>
+                    <View style={s.sourceBadge}>
+                        <View style={[s.sourceDot, { backgroundColor: AMBER }]} />
+                        <Text style={[s.sourceTxt, { color: AMBER }]}>ML KIT</Text>
                     </View>
                 )}
+
+                {/* Result text */}
                 {lastResult ? (
                     <Animated.Text
                         style={[
-                            styles.resultText,
-                            isRTL && styles.rtlText,
+                            s.resultText,
+                            isRTL && s.rtlText,
                             { opacity: resultOpacity, transform: [{ translateY: resultSlide }] },
                         ]}
                         accessibilityLiveRegion="polite"
@@ -494,28 +625,37 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
                     </Animated.Text>
                 ) : null}
 
-                <View style={[styles.hintRow, isRTL && styles.rowReverse]}>
-                    <Text style={[styles.modeName, { color: modeColor }]}>
-                        {modeStrings[currentMode.id]?.label?.toUpperCase()}
+                {/* Mode label + hint */}
+                <View style={[s.hintRow, isRTL && s.rowReverse]}>
+                    <Text style={[s.modeName, { color: activeColor }]}>
+                        {watching
+                            ? (isRTL ? 'مراقبة نشطة' : 'WATCHING')
+                            : modeStrings[currentMode.id]?.label?.toUpperCase()
+                        }
                     </Text>
-                    <Text style={styles.hintDot}>·</Text>
-                    <Text style={[styles.hintText, isRTL && styles.rtlText]}>
-                        {isReady
-                            ? autoScan ? t('hint_auto') : t('hint_ready')
-                            : isScanning ? t('hint_scanning')
-                                : isSpeaking ? t('hint_speaking')
-                                    : ''}
+                    <Text style={s.hintDot}>·</Text>
+                    <Text style={[s.hintText, isRTL && s.rtlText]}>
+                        {watching
+                            ? (isRTL ? 'انقر مرتين أو مرر لأعلى للإيقاف' : 'double tap or swipe up to stop')
+                            : isReady
+                                ? (autoScan ? t('hint_auto') : t('hint_ready'))
+                                : isScanning ? t('hint_scanning')
+                                    : isSpeaking ? t('hint_speaking')
+                                        : ''
+                        }
                     </Text>
                 </View>
 
-                <View style={[styles.gestureRow, isRTL && styles.rowReverse]}>
+                {/* Gesture hint row */}
+                <View style={[s.gestureRow, isRTL && s.rowReverse]}>
                     <GHint icon="◀" label={t('gesture_prev')} />
                     <GHint icon="▶" label={t('gesture_next')} />
+                    <GHint icon="↑"  label={isRTL ? 'مراقبة' : 'watch'} />
                     <GHint icon="···" label={isRTL ? 'الإعدادات' : 'settings'} />
                 </View>
             </View>
 
-            {/* Settings overlay */}
+            {/* ── OVERLAYS ────────────────────────────────────────────────── */}
             {showSettings && (
                 <SettingsOverlay
                     lang={lang}
@@ -544,13 +684,15 @@ function ScanRing({ color }) {
     const rot = useRef(new Animated.Value(0)).current;
     useEffect(() => {
         const loop = Animated.loop(
-            Animated.timing(rot, { toValue: 1, duration: 1100, useNativeDriver: true })
+            Animated.timing(rot, { toValue: 1, duration: 1100, useNativeDriver: true }),
         );
         loop.start();
         return () => loop.stop();
     }, []);
-    const rotate = rot.interpolate({ inputRange:[0,1], outputRange:['0deg','360deg'] });
-    return <Animated.View style={[styles.scanRing, { borderTopColor: color, transform:[{ rotate }] }]} />;
+    const rotate = rot.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+    return (
+        <Animated.View style={[s.scanRing, { borderTopColor: color, transform: [{ rotate }] }]} />
+    );
 }
 
 function WaveBar({ color, delay }) {
@@ -561,89 +703,153 @@ function WaveBar({ color, delay }) {
                 Animated.delay(delay),
                 Animated.timing(h, { toValue: 30, duration: 280, useNativeDriver: false }),
                 Animated.timing(h, { toValue: 5,  duration: 280, useNativeDriver: false }),
-            ])
+            ]),
         );
         loop.start();
         return () => loop.stop();
     }, []);
-    return <Animated.View style={[styles.waveBar, { backgroundColor: color, height: h }]} />;
+    return <Animated.View style={[s.waveBar, { backgroundColor: color, height: h }]} />;
+}
+
+// Pulsing live dot for watch badge
+function LiveDot({ color }) {
+    const op = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(op, { toValue: 0.2, duration: 600, useNativeDriver: true }),
+                Animated.timing(op, { toValue: 1.0, duration: 600, useNativeDriver: true }),
+            ]),
+        );
+        loop.start();
+        return () => loop.stop();
+    }, []);
+    return <Animated.View style={[s.liveDot, { backgroundColor: color, opacity: op }]} />;
 }
 
 function GHint({ icon, label }) {
     return (
-        <View style={styles.ghint}>
-            <Text style={styles.ghintIcon}>{icon}</Text>
-            <Text style={styles.ghintLabel}>{label}</Text>
+        <View style={s.ghint}>
+            <Text style={s.ghintIcon}>{icon}</Text>
+            <Text style={s.ghintLabel}>{label}</Text>
         </View>
     );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const B = 24, BW = 2.5;
+const B  = 24;
+const BW = 2.5;
 
-const styles = StyleSheet.create({
-    root:          { flex:1, backgroundColor:'#161717' },
-    centerContent: { flex:1, alignItems:'center', justifyContent:'center', padding:40 },
-    overlay:       { ...StyleSheet.absoluteFillObject, backgroundColor:'#161717' },
-    vignetteBottom:{ position:'absolute', bottom:0, left:0, right:0, height:240, backgroundColor:'rgba(22,23,23,0.85)' },
+const s = StyleSheet.create({
+    root:          { flex: 1, backgroundColor: BG },
+    centerContent: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40 },
+    overlay:       { ...StyleSheet.absoluteFillObject, backgroundColor: BG },
+    vignetteBottom:{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 250,
+        backgroundColor: 'rgba(22,23,23,0.88)' },
 
-    bracketTL: { position:'absolute', top:18, left:18,    width:B, height:B, borderTopWidth:BW,    borderLeftWidth:BW   },
-    bracketTR: { position:'absolute', top:18, right:18,   width:B, height:B, borderTopWidth:BW,    borderRightWidth:BW  },
-    bracketBL: { position:'absolute', bottom:18, left:18,  width:B, height:B, borderBottomWidth:BW, borderLeftWidth:BW  },
-    bracketBR: { position:'absolute', bottom:18, right:18, width:B, height:B, borderBottomWidth:BW, borderRightWidth:BW },
+    // Brackets
+    bracketTL: { position: 'absolute', top: 18, left: 18,    width: B, height: B, borderTopWidth: BW,    borderLeftWidth: BW   },
+    bracketTR: { position: 'absolute', top: 18, right: 18,   width: B, height: B, borderTopWidth: BW,    borderRightWidth: BW  },
+    bracketBL: { position: 'absolute', bottom: 18, left: 18,  width: B, height: B, borderBottomWidth: BW, borderLeftWidth: BW  },
+    bracketBR: { position: 'absolute', bottom: 18, right: 18, width: B, height: B, borderBottomWidth: BW, borderRightWidth: BW },
 
     scanLine: {
-        position:'absolute', top:0, left:18, right:18, height:2,
-        shadowOffset:{width:0,height:0}, shadowOpacity:1, shadowRadius:8, elevation:8,
+        position: 'absolute', top: 0, left: 18, right: 18, height: 2,
+        shadowOffset: { width: 0, height: 0 }, shadowOpacity: 1,
+        shadowRadius: 8, elevation: 8,
     },
 
-    topBar:   { position:'absolute', top:0, left:0, right:0, flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingTop:50, paddingHorizontal:20, paddingBottom:10 },
-    rowReverse: { flexDirection: 'row-reverse' },
-    logo:     { width:100, height:32, resizeMode:'contain' },
-    topRight: { flexDirection:'row', alignItems:'center', gap:10 },
-    connDot:  { width:7, height:7, borderRadius:3.5 },
-    scanCount:{ color:'rgba(255,255,255,0.35)', fontSize:11, fontWeight:'700' },
-    settingsHint: { color:'rgba(255,255,255,0.15)', fontSize:14, letterSpacing:2 },
+    // Top bar
+    topBar:      { position: 'absolute', top: 0, left: 0, right: 0,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingTop: 50, paddingHorizontal: 20, paddingBottom: 10 },
+    rowReverse:  { flexDirection: 'row-reverse' },
+    logo:        { width: 100, height: 32, resizeMode: 'contain' },
+    topRight:    { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    connDot:     { width: 7, height: 7, borderRadius: 3.5 },
+    scanCount:   { color: 'rgba(255,255,255,0.35)', fontSize: 11, fontWeight: '700' },
+    settingsHint:{ color: 'rgba(255,255,255,0.15)', fontSize: 14, letterSpacing: 2 },
 
-    modeBar:      { position:'absolute', top:106, left:0, right:0, flexDirection:'row', justifyContent:'center', gap:8 },
-    modePill:     { width:38, height:38, borderRadius:19, alignItems:'center', justifyContent:'center', borderWidth:1, borderColor:'rgba(255,255,255,0.1)', backgroundColor:'rgba(255,255,255,0.04)' },
+    // Mode pills
+    modeBar:  { position: 'absolute', top: 106, left: 0, right: 0,
+        flexDirection: 'row', justifyContent: 'center', gap: 8 },
+    modePill: { width: 38, height: 38, borderRadius: 19,
+        alignItems: 'center', justifyContent: 'center',
+        borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+        backgroundColor: 'rgba(255,255,255,0.04)' },
 
-    center:      { ...StyleSheet.absoluteFillObject, alignItems:'center', justifyContent:'center' },
-    readyRing:   { width:72, height:72, borderRadius:36, borderWidth:1.5, alignItems:'center', justifyContent:'center' },
-    readyDot:    { width:8, height:8, borderRadius:4 },
-    scanningBox: { alignItems:'center', gap:16 },
-    scanRing:    { width:60, height:60, borderRadius:30, borderWidth:2.5, borderColor:'transparent', borderLeftColor:'transparent', borderRightColor:'transparent', borderBottomColor:'transparent' },
-    scanLabel:   { fontSize:10, letterSpacing:6, fontWeight:'700' },
-    waveRow:     { flexDirection:'row', gap:5, alignItems:'center', height:40 },
-    waveBar:     { width:4, borderRadius:2 },
-    errorRing:   { width:56, height:56, borderRadius:28, borderWidth:1.5, alignItems:'center', justifyContent:'center', backgroundColor:'rgba(255,68,85,0.1)' },
-    errorLine1:  { position:'absolute', width:22, height:2.5, borderRadius:1.25, transform:[{rotate:'45deg'}] },
-    errorLine2:  { position:'absolute', width:22, height:2.5, borderRadius:1.25, transform:[{rotate:'-45deg'}] },
+    // Center
+    center:     { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
 
-    permIconBox:      { width:72, height:72, alignItems:'center', justifyContent:'center', marginBottom:20 },
-    permCameraBody:   { width:56, height:42, borderRadius:8, borderWidth:3, borderColor:CYAN, alignItems:'center', justifyContent:'center' },
-    permCameraLens:   { width:18, height:18, borderRadius:9, borderWidth:3, borderColor:CYAN },
-    permCameraBump:   { position:'absolute', top:10, width:18, height:9, borderRadius:4, backgroundColor:CYAN },
-    autoBadge:   { position:'absolute', top:-58, paddingHorizontal:12, paddingVertical:4, borderRadius:4, borderWidth:1, backgroundColor:'rgba(255,176,32,0.1)' },
-    autoText:    { fontSize:9, letterSpacing:4, fontWeight:'700' },
+    watchRing:  { position: 'absolute', width: 128, height: 128,
+        borderRadius: 64, borderWidth: 1.5 },
 
-    bottom:       { position:'absolute', bottom:0, left:0, right:0, alignItems:'center', paddingBottom:38, paddingHorizontal:24, gap:9 },
-    sourceBadge:  { flexDirection:'row', alignItems:'center', gap:5, paddingHorizontal:8, paddingVertical:3, borderRadius:3, borderWidth:1, borderColor:'rgba(255,176,32,0.25)', backgroundColor:'rgba(255,176,32,0.06)' },
-    sourceDot:    { width:5, height:5, borderRadius:2.5 },
-    sourceTxt:    { fontSize:8, letterSpacing:3, fontWeight:'700' },
-    resultText:   { color:'rgba(255,255,255,0.92)', fontSize:17, textAlign:'center', lineHeight:26 },
-    rtlText:      { textAlign:'right' },
-    hintRow:      { flexDirection:'row', alignItems:'center', gap:8 },
-    modeName:     { fontSize:9, letterSpacing:4, fontWeight:'800' },
-    hintDot:      { color:'rgba(255,255,255,0.2)', fontSize:10 },
-    hintText:     { color:'rgba(255,255,255,0.2)', fontSize:9, letterSpacing:2 },
-    gestureRow:   { flexDirection:'row', gap:20, marginTop:2 },
-    ghint:        { alignItems:'center', gap:2 },
-    ghintIcon:    { color:'rgba(255,255,255,0.22)', fontSize:10 },
-    ghintLabel:   { color:'rgba(255,255,255,0.14)', fontSize:8, letterSpacing:2 },
+    readyRing:  { width: 72, height: 72, borderRadius: 36,
+        borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+    readyDot:   { width: 8, height: 8, borderRadius: 4 },
 
-    permTitle:   { color:'#fff', fontSize:22, fontWeight:'700', marginBottom:12, textAlign:'center' },
-    permBody:    { color:'rgba(255,255,255,0.55)', fontSize:16, textAlign:'center', lineHeight:24, marginBottom:32 },
-    permBtn:     { backgroundColor:CYAN, paddingHorizontal:32, paddingVertical:14, borderRadius:8, minWidth:180, alignItems:'center' },
-    permBtnText: { color:'#000', fontSize:16, fontWeight:'800', letterSpacing:1 },
+    scanningBox:{ alignItems: 'center', gap: 16 },
+    scanRing:   { width: 60, height: 60, borderRadius: 30, borderWidth: 2.5,
+        borderColor: 'transparent',
+        borderLeftColor: 'transparent', borderRightColor: 'transparent',
+        borderBottomColor: 'transparent' },
+    scanLabel:  { fontSize: 10, letterSpacing: 6, fontWeight: '700' },
+
+    waveRow:    { flexDirection: 'row', gap: 5, alignItems: 'center', height: 40 },
+    waveBar:    { width: 4, borderRadius: 2 },
+
+    errorRing:  { width: 56, height: 56, borderRadius: 28, borderWidth: 1.5,
+        alignItems: 'center', justifyContent: 'center',
+        backgroundColor: 'rgba(255,68,85,0.1)' },
+    errorLine1: { position: 'absolute', width: 22, height: 2.5,
+        borderRadius: 1.25, transform: [{ rotate: '45deg' }] },
+    errorLine2: { position: 'absolute', width: 22, height: 2.5,
+        borderRadius: 1.25, transform: [{ rotate: '-45deg' }] },
+
+    stateBadge:     { position: 'absolute', flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12, paddingVertical: 4,
+        borderRadius: 4, borderWidth: 1 },
+    stateBadgeText: { fontSize: 9, letterSpacing: 4, fontWeight: '700' },
+    liveDot:        { width: 5, height: 5, borderRadius: 2.5 },
+
+    // Bottom
+    bottom:      { position: 'absolute', bottom: 0, left: 0, right: 0,
+        alignItems: 'center', paddingBottom: 38,
+        paddingHorizontal: 24, gap: 9 },
+    sourceBadge: { flexDirection: 'row', alignItems: 'center', gap: 5,
+        paddingHorizontal: 8, paddingVertical: 3,
+        borderRadius: 3, borderWidth: 1,
+        borderColor: 'rgba(255,176,32,0.25)',
+        backgroundColor: 'rgba(255,176,32,0.06)' },
+    sourceDot:   { width: 5, height: 5, borderRadius: 2.5 },
+    sourceTxt:   { fontSize: 8, letterSpacing: 3, fontWeight: '700' },
+    resultText:  { color: 'rgba(255,255,255,0.92)', fontSize: 17,
+        textAlign: 'center', lineHeight: 26 },
+    rtlText:     { textAlign: 'right' },
+    hintRow:     { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    modeName:    { fontSize: 9, letterSpacing: 4, fontWeight: '800' },
+    hintDot:     { color: 'rgba(255,255,255,0.2)', fontSize: 10 },
+    hintText:    { color: 'rgba(255,255,255,0.2)', fontSize: 9, letterSpacing: 2 },
+    gestureRow:  { flexDirection: 'row', gap: 18, marginTop: 2 },
+    ghint:       { alignItems: 'center', gap: 2 },
+    ghintIcon:   { color: 'rgba(255,255,255,0.22)', fontSize: 10 },
+    ghintLabel:  { color: 'rgba(255,255,255,0.14)', fontSize: 8, letterSpacing: 2 },
+
+    // Permission
+    permIconBox:    { width: 72, height: 72, alignItems: 'center',
+        justifyContent: 'center', marginBottom: 20 },
+    permCameraBody: { width: 56, height: 42, borderRadius: 8,
+        borderWidth: 3, borderColor: CYAN,
+        alignItems: 'center', justifyContent: 'center' },
+    permCameraLens: { width: 18, height: 18, borderRadius: 9, borderWidth: 3, borderColor: CYAN },
+    permCameraBump: { position: 'absolute', top: 10, width: 18, height: 9,
+        borderRadius: 4, backgroundColor: CYAN },
+    permTitle:      { color: '#fff', fontSize: 22, fontWeight: '700',
+        marginBottom: 12, textAlign: 'center' },
+    permBody:       { color: 'rgba(255,255,255,0.55)', fontSize: 16,
+        textAlign: 'center', lineHeight: 24, marginBottom: 32 },
+    permBtn:        { backgroundColor: CYAN, paddingHorizontal: 32, paddingVertical: 14,
+        borderRadius: 8, minWidth: 180, alignItems: 'center' },
+    permBtnText:    { color: '#000', fontSize: 16, fontWeight: '800', letterSpacing: 1 },
 });

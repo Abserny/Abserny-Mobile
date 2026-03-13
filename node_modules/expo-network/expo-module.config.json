@@ -1,0 +1,15 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["NetworkModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.network.NetworkModule"],
+    "publication": {
+      "groupId": "host.exp.exponent",
+      "artifactId": "expo.modules.network",
+      "version": "8.0.8",
+      "repository": "local-maven-repo"
+    }
+  }
+}

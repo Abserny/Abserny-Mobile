@@ -311,6 +311,47 @@ export function IconFinish({ size = 48, color = '#FFB020' }) {
     );
 }
 
+
+// ── SwipeUp (Upward arrow with finger) ───────────────────────────────────────
+export function IconSwipeUp({ size = 24, color = '#00BFFF' }) {
+    const s = size;
+    return (
+        <View style={{ width: s, height: s, alignItems: 'center', justifyContent: 'center' }}>
+            {/* Arrow shaft */}
+            <View style={{
+                position: 'absolute',
+                width: s * 0.1, height: s * 0.5,
+                backgroundColor: color, borderRadius: s * 0.05,
+                top: s * 0.1,
+            }} />
+            {/* Arrow head left */}
+            <View style={{
+                position: 'absolute',
+                width: s * 0.26, height: s * 0.1,
+                backgroundColor: color, borderRadius: s * 0.05,
+                top: s * 0.1,
+                transform: [{ rotate: '-45deg' }, { translateX: -s * 0.09 }],
+            }} />
+            {/* Arrow head right */}
+            <View style={{
+                position: 'absolute',
+                width: s * 0.26, height: s * 0.1,
+                backgroundColor: color, borderRadius: s * 0.05,
+                top: s * 0.1,
+                transform: [{ rotate: '45deg' }, { translateX: s * 0.09 }],
+            }} />
+            {/* Finger base */}
+            <View style={{
+                position: 'absolute',
+                bottom: s * 0.08,
+                width: s * 0.4, height: s * 0.22,
+                borderRadius: s * 0.11,
+                backgroundColor: color, opacity: 0.7,
+            }} />
+        </View>
+    );
+}
+
 // ── Map of icon ID → component ────────────────────────────────────────────────
 export const GESTURE_ICONS = {
     intro:       IconWave,
@@ -322,6 +363,7 @@ export const GESTURE_ICONS = {
     swipe_done:  IconCheck,
     triple_tap:  IconTripleTap,
     finish:      IconFinish,
+    swipe_up:    IconSwipeUp,
 };
 
 export const MODE_ICONS = {
