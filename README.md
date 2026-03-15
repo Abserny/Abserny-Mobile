@@ -40,7 +40,7 @@ The app captures an image, sends it to Gemini 2.0 Flash Lite for a concise spoke
 
 ## Abserny — system architecture
 
-![Alt text](./assets//images/abserny-arch.svg)
+![Alt text](./assets/abserny-arch.svg)
 
 </div>
 
