@@ -36,6 +36,16 @@ The app captures an image, sends it to Gemini 2.0 Flash Lite for a concise spoke
 
 ---
 
+<div align="center">
+
+## Abserny — system architecture
+
+![Alt text](./assets//images/abserny-arch.svg)
+
+</div>
+
+---
+
 ## Gestures
 
 Everything in Abserny is controlled without looking at the screen.
