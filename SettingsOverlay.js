@@ -13,7 +13,7 @@ const WHITE = 'rgba(255,255,255,0.82)';
 const DIM   = 'rgba(255,255,255,0.22)';
 const LINE  = 'rgba(255,255,255,0.06)';
 
-const ITEM_COLORS = [CYAN, AMBER, DIM];
+const ITEM_COLORS = [CYAN, AMBER];
 
 export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChangeLang, onClose }) {
     const [activeIndex, setActiveIndex] = useState(0);
@@ -21,7 +21,7 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
     const backdropOpacity = useRef(new Animated.Value(0)).current;
     const panelSlide      = useRef(new Animated.Value(60)).current;
     const panelOpacity    = useRef(new Animated.Value(0)).current;
-    const rowAnims        = useRef([0,1,2].map(() => new Animated.Value(0))).current;
+    const rowAnims        = useRef([0,1].map(() => new Animated.Value(0))).current;
 
     const activeRef       = useRef(0);
     const tRef            = useRef(t);
@@ -39,7 +39,6 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
     const getItems = () => [
         { label: tRef.current('settings_repeat_tour'), action: () => onRepeatRef.current?.() },
         { label: tRef.current('settings_change_lang'), action: () => onChangeLangRef.current?.() },
-        { label: tRef.current('settings_close'),       action: () => onCloseRef.current?.() },
     ];
 
     useEffect(() => {
@@ -100,11 +99,19 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
             }
             if (Math.abs(dx) > 20 || Math.abs(dy) > 20) return;
             tapCount.current += 1;
+            // Triple tap immediately closes — no wait needed
+            if (tapCount.current >= 3) {
+                tapCount.current = 0;
+                clearTimeout(tapTimer.current);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                onCloseRef.current?.();
+                return;
+            }
             clearTimeout(tapTimer.current);
             tapTimer.current = setTimeout(() => {
                 const count = tapCount.current; tapCount.current = 0;
                 const items = getItems();
-                if (count >= 2) {
+                if (count === 2) {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
                     items[activeRef.current]?.action?.();
                 } else if (count === 1) {
@@ -129,7 +136,7 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
                 <View style={s.handle} />
 
                 {/* Title */}
-                <Text style={s.title}>{lang === 'ar' ? 'الإعدادات' : 'Settings'}</Text>
+                <Text style={[s.title, isRTL && s.titleRTL]}>{lang === 'ar' ? 'الإعدادات' : 'Settings'}</Text>
 
                 {/* Divider */}
                 <View style={s.divider} />
@@ -142,17 +149,25 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
                         <Animated.View key={i} style={[
                             s.row,
                             i < items.length - 1 && s.rowBorder,
-                            { opacity: rowAnims[i] },
+                            { opacity: rowAnims[i], flexDirection: isRTL ? 'row-reverse' : 'row' },
                         ]}>
-                            {/* Active indicator — left bar */}
-                            <View style={[s.rowBar, { backgroundColor: active ? color : 'transparent' }]} />
+                            {/* Accent bar — start side */}
+                            <View style={[
+                                s.rowBar,
+                                { backgroundColor: active ? color : 'transparent',
+                                    marginRight: isRTL ? 0 : 16,
+                                    marginLeft:  isRTL ? 16 : 0 },
+                            ]} />
+                            {/* Label — fills remaining space, text aligns to start */}
                             <Text style={[
                                 s.rowLabel,
-                                isRTL && s.rtl,
-                                { color: active ? color : WHITE },
+                                { color: active ? color : WHITE,
+                                    textAlign: isRTL ? 'right' : 'left',
+                                    writingDirection: isRTL ? 'rtl' : 'ltr' },
                             ]}>
                                 {item.label}
                             </Text>
+                            {/* Active dot — end side */}
                             {active && <View style={[s.rowDot, { backgroundColor: color }]} />}
                         </Animated.View>
                     );
@@ -160,12 +175,16 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
 
                 {/* Footer hint */}
                 <View style={[s.footer, isRTL && s.rowReverse]}>
-                    <Text style={s.footerText}>
+                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
                         {lang === 'ar' ? 'مرر للتنقل' : 'swipe to navigate'}
                     </Text>
                     <View style={s.footerSep} />
-                    <Text style={s.footerText}>
+                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
                         {lang === 'ar' ? 'انقر مرتين للاختيار' : 'double tap to select'}
+                    </Text>
+                    <View style={s.footerSep} />
+                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
+                        {lang === 'ar' ? 'انقر ثلاثاً للإغلاق' : 'triple tap to close'}
                     </Text>
                 </View>
             </Animated.View>
@@ -183,10 +202,15 @@ const s = StyleSheet.create({
     },
     handle:     { width:36, height:3, borderRadius:1.5, backgroundColor:'rgba(255,255,255,0.12)', alignSelf:'center', marginTop:12, marginBottom:4 },
     title:      { color:DIM, fontSize:11, letterSpacing:4, fontWeight:'600', textAlign:'center', paddingVertical:16 },
+    titleRTL:   { letterSpacing:1, fontSize:13 },
+    titleRTL:   { letterSpacing:1, fontSize:13 },
     divider:    { height:1, backgroundColor:LINE, marginHorizontal:0 },
     row:        { flexDirection:'row', alignItems:'center', paddingVertical:20, paddingHorizontal:24 },
+    rowRTL:     { flexDirection:'row-reverse' },
     rowBorder:  { borderBottomWidth:1, borderBottomColor:LINE },
-    rowBar:     { width:2, height:18, borderRadius:1, marginRight:16 },
+    rowBar:     { width:2, height:18, borderRadius:1 },
+    rowBarLTR:  { marginRight:16, marginLeft:0 },
+    rowBarRTL:  { marginLeft:16, marginRight:0 },
     rowLabel:   { flex:1, color:WHITE, fontSize:16, fontWeight:'500' },
     rowDot:     { width:5, height:5, borderRadius:2.5 },
     rtl:        { textAlign:'right' },
@@ -194,4 +218,6 @@ const s = StyleSheet.create({
     footer:     { flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, paddingTop:16, paddingHorizontal:24 },
     footerSep:  { width:3, height:3, borderRadius:1.5, backgroundColor:'rgba(255,255,255,0.1)' },
     footerText: { color:'rgba(255,255,255,0.15)', fontSize:10, letterSpacing:1 },
+    footerTextRTL: { letterSpacing:0, fontSize:11 },
+    footerTextRTL: { letterSpacing:0, fontSize:11 },
 });

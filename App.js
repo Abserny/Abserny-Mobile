@@ -20,6 +20,10 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import * as Speech  from 'expo-speech';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// TTS is prewarmed in index.js (the true entry point) before this file loads.
+
 import { useVoice }                              from './hooks/useVoice';
 import { useGestures }                           from './hooks/useGestures';
 import { useDetection }                          from './hooks/useDetection';
@@ -60,11 +64,13 @@ const MODE_COLORS = {
 // ── Root — decides which screen to show ───────────────────────────────────────
 export default function App() {
     const {
-        lang, loading, onboarded,
+        lang, loaded, onboarded,
         chooseLang, completeOnboarding, resetOnboarding, resetLanguage, t,
     } = useLanguage();
 
-    if (loading) return <View style={{ flex: 1, backgroundColor: BG }} />;
+    // Show blank screen for the ~200ms AsyncStorage takes — same as before
+    // but renamed from `loading` to `loaded` to be positive/clear.
+    if (!loaded) return <View style={{ flex: 1, backgroundColor: BG }} />;
 
     if (!lang || !onboarded) {
         return (
@@ -103,12 +109,27 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     const [showLangPicker, setShowLangPicker] = useState(false);
 
     const { speak, stop }  = useVoice(lang);
-    const { detect }       = useDetection();
+
+    // Speak once when all Gemini keys exhaust for the day, so the user knows
+    // the app has silently switched to basic (ML Kit) offline mode.
+    const speakQuotaRef = useRef(null);
+    const { detect } = useDetection({
+        onQuotaExhausted: () => {
+            speakQuotaRef.current?.(
+                lang === 'ar'
+                    ? 'انتهت حصة الذكاء الاصطناعي اليوم. يجري الانتقال للوضع الأساسي.'
+                    : 'AI quota reached for today. Switching to basic mode.',
+                'high',
+            );
+        },
+    });
 
     // Enhancement: speak connectivity changes so blind users know when
     // the app switches between Gemini (online) and ML Kit (offline) mode.
     const speakRef = useRef(speak);
     useEffect(() => { speakRef.current = speak; }, [speak]);
+    // Keep speakQuotaRef in sync with speak so quota announcement uses current speak fn
+    useEffect(() => { speakQuotaRef.current = speak; }, [speak]);
     const tRef = useRef(t);
     useEffect(() => { tRef.current = t; }, [t]);
 
@@ -137,10 +158,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
     const watchingRef = useRef(watching);
     useEffect(() => { watchingRef.current = watching; }, [watching]);
 
-    // TTS prewarm
-    useEffect(() => {
-        Speech.speak(' ', { language: lang === 'ar' ? 'ar-SA' : 'en-US', volume: 0 });
-    }, []); // eslint-disable-line
+    // TTS is prewarmed at module load time (top of file) — no need to repeat here.
 
     // ── Animations ────────────────────────────────────────────────────────────
     const scanLineAnim   = useRef(new Animated.Value(0)).current;
@@ -168,16 +186,21 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
         AccessibilityInfo.isReduceMotionEnabled().then(setReducedMo);
     }, []);
 
-    // Boot
+    // Boot — speak immediately when lang/mode are known, don't wait for camera.
+    // Camera permission is handled separately below. Waiting for it was causing
+    // a 1–3s delay because useCameraPermissions() returns null on the first
+    // render even when permission was already granted, and the TTS engine
+    // needs a real speak() call (not a volume:0 prewarm) to fully wake up.
     useEffect(() => {
-        if (!permission?.granted || bootSpoken.current) return;
+        if (bootSpoken.current) return;
         bootSpoken.current = true;
         const ms = MODES_STRINGS[lang]?.[currentMode.id] ?? MODES_STRINGS.en[currentMode.id];
         setAppState(STATE.READY);
         startPulse();
         speak(t('ready', ms.label, ms.hint), 'high');
-    }, [permission?.granted, lang]); // eslint-disable-line
+    }, []); // eslint-disable-line
 
+    // Camera permission — handled independently of boot speech
     useEffect(() => {
         if (!permission) return;
         if (!permission.granted) {
@@ -505,7 +528,7 @@ function MainApp({ lang, t, onChooseLang, onResetLanguage, onResetOnboarding }) 
                         ]}>
                             {ModeIcon && (
                                 <ModeIcon
-                                    size={17}
+                                    size={20}
                                     color={active
                                         ? (watching ? GREEN : MODE_COLORS[mode.id])
                                         : 'rgba(255,255,255,0.35)'
@@ -773,7 +796,7 @@ const s = StyleSheet.create({
     // Mode pills
     modeBar:  { position: 'absolute', top: 106, left: 0, right: 0,
         flexDirection: 'row', justifyContent: 'center', gap: 8 },
-    modePill: { width: 38, height: 38, borderRadius: 19,
+    modePill: { width: 42, height: 42, borderRadius: 21,
         alignItems: 'center', justifyContent: 'center',
         borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
         backgroundColor: 'rgba(255,255,255,0.04)' },

@@ -33,19 +33,23 @@ Look at this image and respond in ONE of two ways only:
 2. If nothing important or changed: respond with exactly the single word: CLEAR
 Do NOT greet. Do NOT explain. ONE line only.`,
 
-    ar: `أنت مساعد وعي مستمر لشخص كفيف يمشي.
+    ar: `أنت مساعد وعي مستمر لشخص كفيف يمشي. يجب أن تكون إجابتك باللغة العربية فقط بدون أي كلمات إنجليزية.
 انظر إلى هذه الصورة وأجب بإحدى طريقتين فقط:
-١. إذا كان هناك خطر أو تغيير مهم (شخص، درجة، عائق، شيء متحرك، نص جديد): صِفه في ١٠ كلمات باستخدام الاتجاهات (أمامك، يسارك، يمينك).
-٢. إذا لم يكن هناك شيء مهم: أجب بكلمة واحدة فقط: واضح
-لا تُحيّ. لا تُفسّر. سطر واحد فقط.`,
+١. إذا كان هناك خطر أو تغيير مهم (شخص، درجة، عائق، شيء متحرك، نص جديد): صِفه في ١٠ كلمات عربية باستخدام الاتجاهات (أمامك، يسارك، يمينك).
+٢. إذا لم يكن هناك شيء مهم أو لم يتغير شيء: أجب بكلمة واحدة عربية فقط: واضح
+لا تُحيّ. لا تُفسّر. لا تكتب بالإنجليزية. سطر واحد فقط.`,
 };
 
-// FIX: case-insensitive, punctuation-stripped clear check
-// Handles: 'CLEAR', 'Clear', 'clear.', 'clear,', 'واضح.' etc.
+// FIX: case-insensitive, punctuation-stripped clear check.
+// Also catches common English phrases Gemini returns when it ignores the Arabic
+// prompt — e.g. "No changes", "Nothing important", "Scene unchanged".
 function isCleared(text) {
     if (!text) return true;
     const normalized = text.trim().toLowerCase().replace(/[.،,!؟?]/g, '');
-    return normalized === 'clear' || normalized === 'واضح';
+    if (normalized === 'clear' || normalized === 'واضح') return true;
+    // Catch multi-word English "clear" responses
+    if (/^(no changes?|nothing (important|new|changed?)|scene unchanged|all clear|nothing to report)$/.test(normalized)) return true;
+    return false;
 }
 
 function isHazard(text, lang) {

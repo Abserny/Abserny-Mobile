@@ -25,7 +25,7 @@ const STEP_COLORS = {
     intro: CYAN, double_tap: CYAN, double_done: GREEN,
     long_press: PURPLE, long_done: GREEN,
     swipe: GREEN, swipe_done: GREEN,
-    triple_tap: AMBER, finish: AMBER,
+    triple_tap: AMBER, swipe_up: CYAN, finish: AMBER,
 };
 
 function speakNow(text, lang = 'en-US', rate = 0.88) {
@@ -253,18 +253,21 @@ export default function OnboardingScreen({
     confirmLangRef.current = confirmLang;
 
     useEffect(() => {
-        Speech.speak(' ', { language: initialLang==='ar' ? 'ar-SA' : 'en-US', volume: 0 });
+        // TTS is already prewarmed at module load time in App.js — no need to
+        // fire another silent speak() here. Just start the animation and speak.
         Animated.parallel([
             Animated.timing(fadeAnim,  { toValue:1, duration:500, useNativeDriver:true }),
             Animated.timing(slideAnim, { toValue:0, duration:500, useNativeDriver:true }),
         ]).start();
         if (initialPhase === 'tutorial') {
-            setTimeout(() => runStepRef.current(0, initialLang), 600);
+            // Reduced from 600ms — TTS is already warm so no buffer needed
+            setTimeout(() => runStepRef.current(0, initialLang), 200);
         } else {
+            // Reduced from 400ms — engine is warm, speak as soon as UI is visible
             setTimeout(() => speakNow(
                 'Welcome to Abserny. Swipe right for English. Swipe left for Arabic. Double tap to confirm.',
                 'en-US', 0.88
-            ), 400);
+            ), 150);
         }
     }, []); // eslint-disable-line
 
@@ -386,7 +389,7 @@ export default function OnboardingScreen({
                         <View style={s.tutWrap}>
                             {/* Step counter + progress */}
                             <View style={s.progressRow}>
-                                <Text style={s.stepCounter}>
+                                <Text style={[s.stepCounter, { direction: 'ltr' }]}>
                                     <Text style={{ color: stepColor }}>{stepNum}</Text>
                                     <Text style={{ color: DIMMER }}>/{steps.length}</Text>
                                 </Text>
@@ -416,7 +419,7 @@ export default function OnboardingScreen({
                                     <>
                                         <View style={[s.statusDot, { backgroundColor: stepColor }]} />
                                         <Text style={[s.statusText, { color: stepColor }]}>
-                                            {isRTL ? 'جارٍ الانتظار...' : 'waiting...'}
+                                            {isRTL ? 'يجري الانتظار...' : 'waiting...'}
                                         </Text>
                                     </>
                                 ) : (
@@ -459,11 +462,11 @@ const s = StyleSheet.create({
     progressTrack:{ flex:1, height:1, backgroundColor:'rgba(255,255,255,0.08)', borderRadius:1 },
     progressFill: { height:'100%', borderRadius:1 },
 
-    iconWrap:  { width:160, height:160, alignItems:'center', justifyContent:'center', marginBottom:36 },
+    iconWrap:  { width:160, height:160, alignItems:'center', justifyContent:'center', marginBottom:36, direction:'ltr' },
 
-    textWrap:  { width:'100%', marginBottom:28 },
+    textWrap:  { width:'100%', marginBottom:28, paddingHorizontal:4 },
     stepText:  { color:'rgba(255,255,255,0.85)', fontSize:18, lineHeight:28, textAlign:'center', fontWeight:'400' },
-    rtl:       { textAlign:'right' },
+    rtl:       { writingDirection:'rtl' },
 
     statusRow: { flexDirection:'row', alignItems:'center', gap:8, height:24 },
     statusDot: { width:5, height:5, borderRadius:2.5 },
