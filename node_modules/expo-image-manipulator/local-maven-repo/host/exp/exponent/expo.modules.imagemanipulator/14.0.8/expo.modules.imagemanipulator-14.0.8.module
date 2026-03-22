@@ -1,0 +1,103 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "host.exp.exponent",
+    "module": "expo.modules.imagemanipulator",
+    "version": "14.0.8",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.3"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.annotation",
+          "module": "annotation",
+          "version": {
+            "requires": "1.0.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "expo.modules.imagemanipulator-14.0.8.aar",
+          "url": "expo.modules.imagemanipulator-14.0.8.aar",
+          "size": 74861,
+          "sha512": "d8d435b830a1dbb2d6230a113b4605de27bd1fff1d6fbf37ebd770632f61656bf8f7b0d4f408713df1be79ffe44d183abda936ad8a5cf7580cc16078c04276c8",
+          "sha256": "d17bd551626089157b2c6c4bf741ea463e2b1e592804f26495e774fd90a16b33",
+          "sha1": "12f15ef6d33811a5cfe744a41afaa9b07fb90707",
+          "md5": "3b556fa1d971cb956ac33c76aa2dd3f6"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib-jdk7",
+          "version": {
+            "requires": "2.1.20"
+          }
+        },
+        {
+          "group": "androidx.annotation",
+          "module": "annotation",
+          "version": {
+            "requires": "1.0.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "expo.modules.imagemanipulator-14.0.8.aar",
+          "url": "expo.modules.imagemanipulator-14.0.8.aar",
+          "size": 74861,
+          "sha512": "d8d435b830a1dbb2d6230a113b4605de27bd1fff1d6fbf37ebd770632f61656bf8f7b0d4f408713df1be79ffe44d183abda936ad8a5cf7580cc16078c04276c8",
+          "sha256": "d17bd551626089157b2c6c4bf741ea463e2b1e592804f26495e774fd90a16b33",
+          "sha1": "12f15ef6d33811a5cfe744a41afaa9b07fb90707",
+          "md5": "3b556fa1d971cb956ac33c76aa2dd3f6"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "expo.modules.imagemanipulator-14.0.8-sources.jar",
+          "url": "expo.modules.imagemanipulator-14.0.8-sources.jar",
+          "size": 8159,
+          "sha512": "08af6c95ebf4df88f09274f2dc172df230d57b8f3ca2d1774d44584282b25d9d93ba57a78a2cdfef9232145c67aa8765b8df86f6c79852ba8c1b6b3eb3c21350",
+          "sha256": "83452b235a0ea4b9ed9dc693de4fdda6a7940c15c27b9033fb0e398e00b56a7b",
+          "sha1": "b9b08b0aca5c25507ec419236d8895a87df02585",
+          "md5": "71622281255feb4dcaf797a74964698b"
+        }
+      ]
+    }
+  ]
+}

@@ -2,28 +2,28 @@
   "expo": {
     "name": "Abserny",
     "slug": "abserny",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "icon": "./assets/logo.png",
+    "icon": "./assets/icon.png",
     "splash": {
-      "image": "./assets/logo.png",
+      "image": "./assets/logorm.png",
       "resizeMode": "contain",
       "backgroundColor": "#161717"
     },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.abserny.app",
-      "icon": "./assets/logo.png",
+      "icon": "./assets/iconlogo.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Abserny uses your camera to describe your surroundings."
       }
     },
     "android": {
       "package": "com.abserny.app",
-      "icon": "./assets/logo.png",
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/logo.png",
+        "foregroundImage": "./assets/iconLogo.png",
         "backgroundColor": "#000000"
       },
       "permissions": [
@@ -40,17 +40,22 @@
           "cameraPermission": "Abserny needs your camera to describe what is around you."
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "react-native-fast-tflite",
+        {
+          "enableAndroidGpuLibraries": [
+            "libOpenCL-pixel.so",
+            "libGLES_mali.so"
+          ]
+        }
+      ]
     ],
     "extra": {
       "eas": {
-        "projectId": "0799d64e-3a41-406e-bac1-4cba6b13acf6"
+        "projectId": "489ed7a1-5879-40f1-bc56-8160ab96bbce"
       },
-      "geminiKeys": [
-        "AIzaSyD09UgJi02o5P2V3BjLWJEk0A0ZIzY4OKM",
-        "PASTE_KEY_2_HERE",
-        "PASTE_KEY_3_HERE"
-      ]
+      "geminiKeys": []
     }
   }
 }

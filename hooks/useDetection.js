@@ -1,44 +1,18 @@
 /**
- * useDetection.js — Gemini online + ML Kit offline, bilingual
- * Supports 4 standard modes + __watch__ for continuous watch mode.
+ * useDetection.js — Gemini online + EfficientDet-Lite2 offline
  *
- * HOW TO SET YOUR API KEYS:
- *   In app.json under "expo" → "extra":
- *     "geminiKeys": ["KEY_1", "KEY_2", "KEY_3"]
- *   Each key should be from a DIFFERENT Google account — keys from the
- *   same account share the same quota and rotation won't help.
- *   Get free keys at: https://aistudio.google.com
+ * MODEL FACTS (confirmed from model.inputs / model.outputs logs):
+ *   Input:    float32, shape [1, 448, 448, 3], values 0.0–1.0
+ *   Output 0: float32, shape [1, 37629, 90]  — raw class scores per anchor
+ *   Output 1: float32, shape [1, 37629, 4]   — raw box deltas per anchor
  *
- * HOW KEY ROTATION WORKS:
- *   - Keys are tried in order starting from the current active key.
- *   - On HTTP 429 (rate limited): rotate to next key immediately, retry once.
- *   - On RPM limit: the rotated key works right away.
- *   - On RPD limit: key is marked exhausted for the rest of the day
- *     (resets at midnight Pacific). Rotation skips exhausted keys.
- *   - On any other error (network, safety block, etc.): no rotation,
- *     fall through to ML Kit immediately.
- *   - If ALL keys are exhausted: fall through to ML Kit.
+ * This is an SSD (Single Shot Detector) raw output — NOT post-processed.
+ * We must decode boxes and apply greedy NMS ourselves.
  *
- * OFFLINE ACCURACY IMPROVEMENTS (v2.1):
- *   - Noise label filtering: abstract/useless ML Kit categories (furniture,
- *     indoor, art, pattern, etc.) are stripped before building descriptions.
- *   - Confidence-weighted output: labels below 0.55 confidence dropped unless
- *     nothing better exists. Top label always leads the sentence.
- *   - Richer sentence templates: spatial prepositions, article usage, and
- *     natural phrasing instead of flat comma lists.
- *   - Massively expanded AR_LABEL_MAP: covers 350+ ML Kit categories so
- *     Arabic mode rarely falls back to "nothing identified".
- *   - Watch mode offline now detects hazard objects (steps, doors, cars),
- *     not just people.
- *
- * ARABIC PRONUNCIATION FIXES (v2.1):
- *   - All spoken Arabic strings use normalizeArabicForTTS() before being
- *     returned. This function fixes known Android ar-SA TTS mispronunciations:
- *     · "جارٍ" → "يجري" (engine reads "jarin" with wrong nunation)
- *     · Standalone "تم." → "تمّ." (engine clips ultra-short utterances)
- *     · Arabic numerals in strings replaced with spelled-out words
- *     · Tatweel (ـ) stripped — engines handle it unpredictably
- *     · Common loanwords respelled for consistent engine output
+ * PIXEL PIPELINE:
+ *   jpeg-js (pure JS, no native code) decodes the resized JPEG → RGBA Uint8Array
+ *   We strip the alpha channel and normalize RGB to Float32 [0,1]
+ *   Result: Float32Array of 448 * 448 * 3 = 602,112 values
  */
 
 import { useCallback, useRef } from 'react';
@@ -48,601 +22,561 @@ import { GEMINI_PROMPTS } from './useLanguage';
 import { WATCH_PROMPTS }  from './useWatchMode';
 import { normalizeArabicForTTS } from './ttsUtils';
 
-// ── Key pool ──────────────────────────────────────────────────────────────────
+// ── Gemini key pool ───────────────────────────────────────────────────────────
 const RAW_KEYS = (() => {
     const extra = Constants.expoConfig?.extra ?? {};
     if (Array.isArray(extra.geminiKeys) && extra.geminiKeys.length > 0) {
-        return extra.geminiKeys.filter(k => k && k.length > 20 && !k.startsWith('PASTE') && !k.startsWith('YOUR'));
+        return extra.geminiKeys.filter(
+            k => k && k.length > 20 && !k.startsWith('PASTE') && !k.startsWith('YOUR')
+        );
     }
-    if (extra.geminiKey && extra.geminiKey.length > 20 && !extra.geminiKey.startsWith('PASTE') && !extra.geminiKey.startsWith('YOUR')) {
+    if (extra.geminiKey && extra.geminiKey.length > 20
+        && !extra.geminiKey.startsWith('PASTE') && !extra.geminiKey.startsWith('YOUR')) {
         return [extra.geminiKey];
     }
     return [];
 })();
 
-// ── Key rotation state ────────────────────────────────────────────────────────
-function getPacificDateString() {
-    const now = new Date();
-    const pacificOffset = -8 * 60;
-    const pacific = new Date(now.getTime() + pacificOffset * 60 * 1000);
-    return pacific.toISOString().slice(0, 10);
+function getPacificDate() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 }
 
-const keyState = {
-    currentIndex: 0,
-    exhaustedOn: new Map(),
-};
+const keyState = { idx: 0, exhausted: new Map() };
+if (__DEV__) { keyState.exhausted.clear(); }
 
-function isExhausted(key) {
-    return keyState.exhaustedOn.get(key) === getPacificDateString();
-}
-
-function markExhausted(key) {
-    keyState.exhaustedOn.set(key, getPacificDateString());
-    console.warn(`[Abserny] Key ending ...${key.slice(-6)} RPD exhausted for today.`);
-}
-
-function getActiveKey() {
-    if (RAW_KEYS.length === 0) return null;
-    const start = keyState.currentIndex % RAW_KEYS.length;
+function isExhausted(k)   { return keyState.exhausted.get(k) === getPacificDate(); }
+function markExhausted(k) { keyState.exhausted.set(k, getPacificDate()); console.warn(`[Abserny] Key ...${k.slice(-6)} RPD exhausted`); }
+function rotateKey()      { keyState.idx = (keyState.idx + 1) % Math.max(1, RAW_KEYS.length); }
+function getActiveKey()   {
+    if (!RAW_KEYS.length) return null;
     for (let i = 0; i < RAW_KEYS.length; i++) {
-        const idx = (start + i) % RAW_KEYS.length;
-        const key = RAW_KEYS[idx];
-        if (!isExhausted(key)) {
-            keyState.currentIndex = idx;
-            return key;
-        }
+        const k = RAW_KEYS[(keyState.idx + i) % RAW_KEYS.length];
+        if (!isExhausted(k)) { keyState.idx = (keyState.idx + i) % RAW_KEYS.length; return k; }
     }
     return null;
 }
 
-function rotateKey() {
-    if (RAW_KEYS.length <= 1) return;
-    keyState.currentIndex = (keyState.currentIndex + 1) % RAW_KEYS.length;
-    console.log(`[Abserny] Rotated to key index ${keyState.currentIndex}`);
-}
-
+// ── Gemini config ─────────────────────────────────────────────────────────────
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=';
-const TIMEOUT_MS  = 12000;
+const TIMEOUT_MS  = 20000;
+const MAX_TOKENS  = { scene: 80, object: 60, read: 400, people: 80, __watch__: 40 };
+const TEMPERATURE = { scene: 0.2, object: 0.15, read: 0.0, people: 0.2, __watch__: 0.1 };
 
-const MAX_TOKENS = {
-    scene: 80, object: 60, read: 400, people: 80,
-    __watch__: 40,
-};
-const TEMPERATURE = {
-    scene: 0.2, object: 0.15, read: 0.0, people: 0.2,
-    __watch__: 0.1,
-};
+// ── EfficientDet model singleton ──────────────────────────────────────────────
+let _model       = null;
+let _modelState  = 'idle';
+let _loadPromise = null;
 
-// ── ML Kit ────────────────────────────────────────────────────────────────────
-let ImageLabeler   = null;
-let TextRecognizer = null;
-try { ImageLabeler   = require('@react-native-ml-kit/image-labeling').default;  } catch (_) {}
-try { TextRecognizer = require('@react-native-ml-kit/text-recognition').default; } catch (_) {}
+async function ensureModel() {
+    if (_modelState === 'ready')   return _model;
+    if (_modelState === 'loading') return _loadPromise;
+    if (_modelState === 'error')   throw new Error('TFLite model failed to load');
 
-// ── Noise labels ──────────────────────────────────────────────────────────────
-// ML Kit frequently returns these as top hits. They are abstract category
-// labels that carry zero useful information for a blind user — filtering them
-// out dramatically improves output quality.
-const NOISE_LABELS = new Set([
-    'furniture', 'indoor', 'outdoor', 'pattern', 'art', 'design',
-    'decorative', 'decor', 'interior design', 'room', 'architecture',
-    'still life', 'product', 'material', 'texture', 'object',
-    'technology', 'electronic device', 'gadget', 'flooring', 'floor',
-    'ceiling', 'wall', 'surface', 'wood', 'metal', 'plastic', 'fabric',
-    'clothing', 'fashion', 'sportswear', 'recreation', 'sport',
-    'nature', 'landscape', 'sky', 'light', 'darkness', 'shadow',
-    'black and white', 'color', 'shape', 'line', 'circle',
-    'font', 'text', 'number', 'symbol',
-    'monochrome photography', 'photography', 'stock photography',
-    'snapshot', 'image', 'photo',
-]);
-
-// ── Hazard labels for offline watch mode ─────────────────────────────────────
-// When offline, watch mode can only detect what ML Kit labels. This set covers
-// labels that represent genuine navigation hazards worth announcing.
-const HAZARD_LABELS = new Set([
-    'stairs', 'staircase', 'step', 'steps', 'ladder', 'escalator',
-    'car', 'vehicle', 'motorcycle', 'bicycle', 'bus', 'truck',
-    'door', 'gate', 'barrier', 'fence',
-    'curb', 'edge', 'cliff',
-    'fire', 'flame', 'smoke',
-    'water', 'pool', 'puddle',
-    'dog', 'animal',
-]);
-
-
-// ── Arabic translation map ────────────────────────────────────────────────────
-// Covers 350+ ML Kit image labeling categories.
-// Rules:
-//   - Unknown labels return null → caller drops them (never inserts English)
-//   - Translations are optimised for natural TTS output, not just dictionary
-//     accuracy. Some use simpler synonyms that TTS engines pronounce better.
-const AR_LABEL_MAP = {
-    // ── People ────────────────────────────────────────────────────────────────
-    'person': 'شخص', 'human': 'شخص', 'face': 'وجه', 'man': 'رجل',
-    'woman': 'امرأة', 'boy': 'ولد', 'girl': 'فتاة', 'child': 'طفل',
-    'baby': 'رضيع', 'people': 'أشخاص', 'crowd': 'حشد', 'group': 'مجموعة',
-    'adult': 'شخص بالغ', 'senior': 'شخص مسن', 'teenager': 'مراهق',
-    'pedestrian': 'مشاة', 'passenger': 'راكب', 'customer': 'زبون',
-    'student': 'طالب', 'athlete': 'رياضي', 'worker': 'عامل',
-    // ── Body ─────────────────────────────────────────────────────────────────
-    'hand': 'يد', 'finger': 'إصبع', 'arm': 'ذراع', 'leg': 'ساق',
-    'eye': 'عين', 'head': 'رأس', 'hair': 'شعر', 'nose': 'أنف',
-    'mouth': 'فم', 'ear': 'أذن', 'foot': 'قدم', 'shoulder': 'كتف',
-    // ── Furniture ─────────────────────────────────────────────────────────────
-    'chair': 'كرسي', 'armchair': 'كرسي مع مسندين', 'table': 'طاولة',
-    'desk': 'مكتب', 'sofa': 'أريكة', 'couch': 'أريكة', 'bed': 'سرير',
-    'pillow': 'وسادة', 'blanket': 'بطانية', 'mattress': 'مرتبة',
-    'door': 'باب', 'window': 'نافذة', 'wall': 'حائط',
-    'shelf': 'رف', 'bookcase': 'مكتبة', 'bookshelf': 'مكتبة',
-    'wardrobe': 'خزانة ملابس', 'cabinet': 'خزانة', 'drawer': 'درج',
-    'lamp': 'مصباح', 'chandelier': 'ثريا', 'light fixture': 'إنارة',
-    'mirror': 'مرآة', 'curtain': 'ستارة', 'blinds': 'ستائر',
-    'carpet': 'سجادة', 'rug': 'سجادة',
-    'stairs': 'درج', 'step': 'درجة', 'staircase': 'سلم', 'stair': 'درجة',
-    'ladder': 'سلم', 'elevator': 'مصعد', 'escalator': 'سلم كهربائي',
-    'corridor': 'ممر', 'hallway': 'ممر', 'entrance': 'مدخل', 'exit': 'مخرج',
-    'bedroom': 'غرفة نوم', 'bathroom': 'حمام', 'kitchen': 'مطبخ',
-    'dining room': 'غرفة طعام', 'living room': 'غرفة جلوس',
-    'toilet': 'مرحاض', 'sink': 'حوض', 'bathtub': 'حوض استحمام',
-    'shower': 'دش', 'faucet': 'صنبور', 'tap': 'صنبور',
-    'stove': 'موقد', 'oven': 'فرن', 'microwave': 'ميكرويف',
-    'refrigerator': 'ثلاجة', 'fridge': 'ثلاجة', 'freezer': 'مجمّد',
-    'dishwasher': 'غسالة صحون', 'washing machine': 'غسالة',
-    'fan': 'مروحة', 'air conditioner': 'مكيف', 'heater': 'مدفأة',
-    'fireplace': 'مدفأة', 'radiator': 'مشعاع',
-    // ── Electronics ───────────────────────────────────────────────────────────
-    'phone': 'هاتف', 'mobile phone': 'هاتف محمول', 'smartphone': 'هاتف ذكي',
-    'telephone': 'هاتف', 'landline phone': 'هاتف أرضي',
-    'laptop': 'حاسوب محمول', 'computer': 'حاسوب', 'desktop computer': 'حاسوب مكتبي',
-    'monitor': 'شاشة', 'screen': 'شاشة', 'display': 'شاشة',
-    'keyboard': 'لوحة مفاتيح', 'mouse': 'فأرة', 'trackpad': 'لوحة تتبع',
-    'tablet': 'لوح إلكتروني', 'ipad': 'جهاز لوحي', 'e-reader': 'قارئ إلكتروني',
-    'television': 'تلفاز', 'tv': 'تلفاز', 'smart tv': 'تلفاز ذكي',
-    'camera': 'كاميرا', 'digital camera': 'كاميرا رقمية', 'webcam': 'كاميرا ويب',
-    'headphones': 'سماعات', 'earphones': 'سماعات أذن', 'earbuds': 'سماعات صغيرة',
-    'speaker': 'مكبر صوت', 'microphone': 'ميكروفون',
-    'remote control': 'جهاز تحكم', 'charger': 'شاحن', 'cable': 'كابل',
-    'power strip': 'وصلة كهربائية', 'outlet': 'مقبس كهربائي',
-    'printer': 'طابعة', 'scanner': 'ماسح ضوئي',
-    'router': 'جهاز راوتر', 'modem': 'مودم',
-    'projector': 'جهاز عرض', 'remote': 'ريموت',
-    'battery': 'بطارية', 'power bank': 'شاحن محمول',
-    'smartwatch': 'ساعة ذكية', 'fitness tracker': 'جهاز لياقة',
-    // ── Musical instruments ────────────────────────────────────────────────────
-    'guitar': 'غيتار', 'piano': 'بيانو', 'violin': 'كمان',
-    'drum': 'طبل', 'drums': 'طبول', 'flute': 'ناي',
-    'trumpet': 'بوق', 'saxophone': 'ساكسوفون',
-    'musical instrument': 'آلة موسيقية',
-    // ── Clothing ──────────────────────────────────────────────────────────────
-    'shirt': 'قميص', 't-shirt': 'تيشيرت', 'blouse': 'بلوزة',
-    'dress': 'فستان', 'skirt': 'تنورة',
-    'pants': 'بنطلون', 'trousers': 'بنطلون', 'jeans': 'جينز', 'shorts': 'شورت',
-    'jacket': 'جاكيت', 'coat': 'معطف', 'hoodie': 'هودي', 'sweater': 'سترة',
-    'suit': 'بدلة', 'tie': 'ربطة عنق',
-    'shoes': 'حذاء', 'shoe': 'حذاء', 'sneakers': 'حذاء رياضي',
-    'boots': 'حذاء طويل', 'sandals': 'صندل', 'slippers': 'شبشب',
-    'hat': 'قبعة', 'cap': 'كاب', 'glasses': 'نظارة',
-    'sunglasses': 'نظارة شمسية',
-    'bag': 'حقيبة', 'backpack': 'حقيبة ظهر', 'handbag': 'حقيبة يد',
-    'suitcase': 'حقيبة سفر', 'luggage': 'أمتعة',
-    'wallet': 'محفظة', 'watch': 'ساعة يد', 'belt': 'حزام',
-    'scarf': 'وشاح', 'gloves': 'قفازات', 'socks': 'جوارب',
-    'umbrella': 'مظلة',
-    // ── Food & drink ──────────────────────────────────────────────────────────
-    'food': 'طعام', 'meal': 'وجبة', 'dish': 'طبق طعام',
-    'drink': 'مشروب', 'beverage': 'مشروب',
-    'water': 'ماء', 'coffee': 'قهوة', 'tea': 'شاي',
-    'juice': 'عصير', 'milk': 'حليب', 'soda': 'مشروب غازي',
-    'bottle': 'زجاجة', 'cup': 'كوب', 'glass': 'كأس', 'mug': 'كوب',
-    'can': 'علبة', 'jar': 'جرة',
-    'plate': 'طبق', 'bowl': 'وعاء', 'tray': 'صينية',
-    'spoon': 'ملعقة', 'fork': 'شوكة', 'knife': 'سكين', 'chopsticks': 'عيدان',
-    'fruit': 'فاكهة', 'vegetable': 'خضروات',
-    'apple': 'تفاحة', 'banana': 'موزة', 'orange': 'برتقالة',
-    'bread': 'خبز', 'cake': 'كعكة', 'cookie': 'بسكويت',
-    'pizza': 'بيتزا', 'sandwich': 'ساندويش', 'burger': 'برغر',
-    'rice': 'أرز', 'pasta': 'مكرونة', 'soup': 'شوربة',
-    'meat': 'لحم', 'chicken': 'دجاج', 'fish': 'سمك',
-    'egg': 'بيضة', 'cheese': 'جبن',
-    // ── Vehicles ──────────────────────────────────────────────────────────────
-    'car': 'سيارة', 'vehicle': 'مركبة', 'automobile': 'سيارة',
-    'bus': 'حافلة', 'minibus': 'ميكروباص', 'van': 'فان',
-    'truck': 'شاحنة', 'pickup truck': 'بيك أب',
-    'motorcycle': 'دراجة نارية', 'scooter': 'سكوتر',
-    'bicycle': 'دراجة', 'bike': 'دراجة', 'tricycle': 'دراجة ثلاثية',
-    'taxi': 'تاكسي', 'ambulance': 'إسعاف', 'police car': 'سيارة شرطة',
-    'fire truck': 'سيارة إطفاء',
-    'train': 'قطار', 'subway': 'مترو', 'tram': 'ترام',
-    'airplane': 'طائرة', 'helicopter': 'طائرة هليكوبتر',
-    'boat': 'قارب', 'ship': 'سفينة',
-    'wheel': 'عجلة', 'tire': 'إطار',
-    'traffic light': 'إشارة مرور', 'traffic sign': 'لافتة طريق',
-    // ── Outdoor / urban ───────────────────────────────────────────────────────
-    'road': 'طريق', 'street': 'شارع', 'sidewalk': 'رصيف',
-    'pavement': 'رصيف', 'crosswalk': 'ممر مشاة', 'pedestrian crossing': 'ممر مشاة',
-    'intersection': 'تقاطع', 'highway': 'طريق سريع',
-    'bridge': 'جسر', 'tunnel': 'نفق', 'overpass': 'جسر علوي',
-    'parking lot': 'موقف سيارات', 'parking': 'موقف',
-    'building': 'مبنى', 'house': 'منزل', 'apartment': 'شقة',
-    'office building': 'مبنى مكاتب', 'store': 'متجر', 'shop': 'محل',
-    'supermarket': 'سوبرماركت', 'mall': 'مول', 'restaurant': 'مطعم',
-    'hospital': 'مستشفى', 'school': 'مدرسة', 'mosque': 'مسجد',
-    'church': 'كنيسة', 'bank': 'بنك', 'hotel': 'فندق',
-    'gas station': 'محطة وقود', 'pharmacy': 'صيدلية',
-    'tree': 'شجرة', 'bush': 'شجيرة', 'plant': 'نبتة',
-    'flower': 'زهرة', 'grass': 'عشب', 'garden': 'حديقة', 'park': 'حديقة عامة',
-    'sky': 'سماء', 'cloud': 'سحابة', 'sun': 'شمس', 'moon': 'قمر',
-    'rain': 'مطر', 'snow': 'ثلج',
-    'ground': 'أرض', 'rock': 'صخرة', 'sand': 'رمل',
-    'lake': 'بحيرة', 'river': 'نهر', 'sea': 'بحر', 'beach': 'شاطئ',
-    'mountain': 'جبل', 'hill': 'تل', 'valley': 'وادٍ',
-    'fence': 'سياج', 'gate': 'بوابة', 'wall': 'جدار',
-    'curb': 'حافة رصيف', 'pole': 'عمود', 'sign': 'لافتة',
-    'bench': 'مقعد', 'trash can': 'سلة مهملات', 'bin': 'سلة مهملات',
-    'fire hydrant': 'صنبور إطفاء',
-    // ── Animals ───────────────────────────────────────────────────────────────
-    'dog': 'كلب', 'cat': 'قطة', 'bird': 'طائر', 'fish': 'سمكة',
-    'cow': 'بقرة', 'horse': 'حصان', 'sheep': 'خروف', 'goat': 'ماعز',
-    'chicken': 'دجاجة', 'duck': 'بطة',
-    'butterfly': 'فراشة', 'insect': 'حشرة',
-    'animal': 'حيوان',
-    // ── Objects / stationery ──────────────────────────────────────────────────
-    'book': 'كتاب', 'notebook': 'دفتر', 'magazine': 'مجلة', 'newspaper': 'جريدة',
-    'paper': 'ورقة', 'document': 'وثيقة', 'envelope': 'ظرف',
-    'pen': 'قلم', 'pencil': 'قلم رصاص', 'marker': 'ماركر', 'highlighter': 'قلم تظليل',
-    'scissors': 'مقص', 'ruler': 'مسطرة', 'tape': 'شريط لاصق',
-    'box': 'صندوق', 'container': 'حاوية', 'basket': 'سلة', 'bucket': 'دلو',
-    'bag': 'كيس', 'plastic bag': 'كيس بلاستيك',
-    'ball': 'كرة', 'toy': 'لعبة', 'doll': 'دمية',
-    'painting': 'لوحة', 'picture': 'صورة', 'photo': 'صورة', 'frame': 'إطار',
-    'clock': 'ساعة حائط', 'alarm clock': 'منبه', 'key': 'مفتاح', 'lock': 'قفل',
-    'tool': 'أداة', 'hammer': 'مطرقة', 'screwdriver': 'مفك', 'wrench': 'ربط',
-    'drill': 'حفّارة', 'saw': 'منشار',
-    'candle': 'شمعة', 'vase': 'مزهرية', 'pot': 'إناء',
-    'bottle opener': 'فتاحة', 'can opener': 'فتاحة علب',
-    'knife block': 'حامل سكاكين',
-    // ── Hazard / navigation critical ─────────────────────────────────────────
-    'obstacle': 'عائق', 'barrier': 'حاجز', 'construction': 'بناء',
-    'scaffolding': 'سقالة', 'hole': 'حفرة', 'pothole': 'حفرة في الطريق',
-    'puddle': 'بركة ماء', 'ice': 'جليد', 'snow': 'ثلج',
-    'fire': 'نار', 'flame': 'لهب', 'smoke': 'دخان',
-    'broken glass': 'زجاج مكسور', 'debris': 'حطام',
-};
-
-// ── Translate label to Arabic ─────────────────────────────────────────────────
-function translateLabel(label, lang) {
-    if (lang !== 'ar') return label;
-    const key = label.toLowerCase().trim();
-    return AR_LABEL_MAP[key] ?? null;
+    _modelState  = 'loading';
+    _loadPromise = (async () => {
+        try {
+            console.log('[Abserny] Loading EfficientDet-Lite2...');
+            const { loadTensorflowModel } = require('react-native-fast-tflite');
+            _model      = await loadTensorflowModel(require('../assets/efficientdet_lite2.tflite'));
+            _modelState = 'ready';
+            console.log('[Abserny] EfficientDet-Lite2 ready.');
+            return _model;
+        } catch (err) {
+            _modelState = 'error';
+            console.error('[Abserny] TFLite load error:', err.message);
+            throw err;
+        }
+    })();
+    return _loadPromise;
 }
 
-// ── Filter and rank ML Kit labels ────────────────────────────────────────────
-// Returns cleaned, ranked array of {raw, translated, confidence} objects.
-// Removes noise labels and low-confidence hits.
-function processLabels(labels, lang, minConfidence = 0.55) {
-    if (!labels || labels.length === 0) return [];
+// ── COCO class names — 90 classes, 0-indexed ──────────────────────────────────
+// The output tensor has shape [1, 37629, 90] — index 0 = person, etc.
+// This matches the standard COCO 90-class ordering used by SSD models.
+const COCO_CLASSES_90 = [
+    'person','bicycle','car','motorcycle','airplane','bus','train','truck','boat',
+    'traffic light','fire hydrant','stop sign','parking meter','bench','bird','cat',
+    'dog','horse','sheep','cow','elephant','bear','zebra','giraffe','backpack',
+    'umbrella','handbag','tie','suitcase','frisbee','skis','snowboard','sports ball',
+    'kite','baseball bat','baseball glove','skateboard','surfboard','tennis racket',
+    'bottle','wine glass','cup','fork','knife','spoon','bowl','banana','apple',
+    'sandwich','orange','broccoli','carrot','hot dog','pizza','donut','cake','chair',
+    'couch','potted plant','bed','dining table','toilet','tv','laptop','mouse',
+    'remote','keyboard','cell phone','microwave','oven','toaster','sink',
+    'refrigerator','book','clock','vase','scissors','teddy bear','hair drier',
+    'toothbrush',
+];
 
-    const sorted = [...labels].sort((a, b) => b.confidence - a.confidence);
+const COCO_AR = {
+    'person':'شخص','bicycle':'دراجة','car':'سيارة','motorcycle':'دراجة نارية',
+    'airplane':'طائرة','bus':'حافلة','train':'قطار','truck':'شاحنة',
+    'boat':'قارب','traffic light':'إشارة مرور','fire hydrant':'صنبور إطفاء',
+    'stop sign':'لافتة توقف','bench':'مقعد','bird':'طائر','cat':'قطة',
+    'dog':'كلب','horse':'حصان','sheep':'خروف','cow':'بقرة','elephant':'فيل',
+    'bear':'دب','zebra':'حمار وحشي','giraffe':'زرافة','backpack':'حقيبة ظهر',
+    'umbrella':'مظلة','handbag':'حقيبة يد','tie':'ربطة عنق','suitcase':'حقيبة سفر',
+    'sports ball':'كرة','bottle':'زجاجة','wine glass':'كأس','cup':'كوب',
+    'fork':'شوكة','knife':'سكين','spoon':'ملعقة','bowl':'وعاء','banana':'موزة',
+    'apple':'تفاحة','sandwich':'ساندويش','orange':'برتقالة','broccoli':'بروكلي',
+    'carrot':'جزرة','hot dog':'هوت دوج','pizza':'بيتزا','cake':'كعكة',
+    'chair':'كرسي','couch':'أريكة','potted plant':'نبتة','bed':'سرير',
+    'dining table':'طاولة طعام','toilet':'مرحاض','tv':'تلفاز','laptop':'حاسوب محمول',
+    'mouse':'فأرة','remote':'جهاز تحكم','keyboard':'لوحة مفاتيح',
+    'cell phone':'هاتف محمول','microwave':'ميكرويف','oven':'فرن',
+    'sink':'حوض','refrigerator':'ثلاجة','book':'كتاب','clock':'ساعة حائط',
+    'vase':'مزهرية','scissors':'مقص','teddy bear':'دمية دب','toothbrush':'فرشاة أسنان',
+};
+
+const HAZARD_CLASSES = new Set(['car','motorcycle','bus','truck','train','bicycle',
+    'traffic light','stop sign','fire hydrant','bear','dog']);
+const PERSON_CLASS = 'person';
+const SCORE_THRESH   = 0.40;
+const NMS_IOU_THRESH = 0.45;
+const MAX_DETECTIONS = 5;
+const MODEL_SIZE = 448;  // EfficientDet-Lite2 input: 448×448
+
+// ── Sigmoid ───────────────────────────────────────────────────────────────────
+function sigmoid(x) {
+    return 1 / (1 + Math.exp(-x));
+}
+
+// ── IoU for NMS ───────────────────────────────────────────────────────────────
+function iou(a, b) {
+    const x1 = Math.max(a[0], b[0]);
+    const y1 = Math.max(a[1], b[1]);
+    const x2 = Math.min(a[2], b[2]);
+    const y2 = Math.min(a[3], b[3]);
+    const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+    if (inter === 0) return 0;
+    const aArea = (a[2] - a[0]) * (a[3] - a[1]);
+    const bArea = (b[2] - b[0]) * (b[3] - b[1]);
+    return inter / (aArea + bArea - inter);
+}
+
+// ── Greedy NMS ────────────────────────────────────────────────────────────────
+function nms(boxes, scores, iouThresh) {
+    // boxes: [[x1,y1,x2,y2], ...], scores: [float, ...]
+    const order = scores.map((s, i) => i).sort((a, b) => scores[b] - scores[a]);
+    const keep = [];
+    const suppressed = new Set();
+    for (const i of order) {
+        if (suppressed.has(i)) continue;
+        keep.push(i);
+        for (const j of order) {
+            if (j === i || suppressed.has(j)) continue;
+            if (iou(boxes[i], boxes[j]) > iouThresh) suppressed.add(j);
+        }
+    }
+    return keep;
+}
+
+// ── Post-processed output decoder (correct model) ────────────────────────────
+// SSD MobileNet V1 output:
+//   tensors[0] = boxes   Float32[N×4]  — ymin, xmin, ymax, xmax (values 0-1 or 0-300)
+//   tensors[1] = classes Float32[N]    — class ID (1-indexed COCO 90-class in this model)
+//   tensors[2] = scores  Float32[N]    — confidence 0-1 (already post-processed, no sigmoid)
+//   tensors[3] = count   Float32[1]    — number of valid detections
+// N = total slots (usually 10 for this model)
+// Results are already sorted by score descending — just filter and deduplicate.
+function decodePostProcessed(tensors) {
+    const boxes   = tensors[0]; // Float32[N*4]
+    const classes = tensors[1]; // Float32[N]
+    const scores  = tensors[2]; // Float32[N]
+    const count   = Math.min(Math.round(tensors[3][0]), classes.length);
+
+    const seen = new Set(); // deduplicate — keep only top score per class
+    const detections = [];
+
+    for (let i = 0; i < count; i++) {
+        const score = scores[i];
+        if (score < SCORE_THRESH) continue;
+
+        // EfficientDet-Lite2 (MediaPipe) uses 0-indexed COCO classes
+        const classId   = Math.round(classes[i]);
+        const className = COCO_CLASSES_90[classId] ?? '';
+        if (!className) continue;
+
+        // Skip duplicate classes — model already sorted by score,
+        // so the first occurrence is the highest confidence one
+        if (seen.has(className)) continue;
+        seen.add(className);
+
+        detections.push({ className, score });
+    }
+
+    return detections;
+}
+
+// ── Raw SSD output decoder (fallback — wrong model, results inaccurate) ───────
+//
+// Output 0: scores  float32 [1, 37629, 90] — raw logits per anchor per class
+// Output 1: boxes   float32 [1, 37629, 4]  — box deltas [cx, cy, w, h] normalized
+//
+// Steps:
+//   1. Apply sigmoid to scores to get probabilities
+//   2. Find the max class score per anchor
+//   3. Keep anchors above SCORE_THRESH
+//   4. Decode box deltas to [x1, y1, x2, y2]
+//   5. Apply NMS per class
+//
+function decodeSSDOutputs(scoresTensor, boxesTensor) {
+    const numAnchors = 37629;
+    const numClasses = 90;
+    const detections = [];
+
+    // First pass: find all anchors with a class score above threshold
+    for (let a = 0; a < numAnchors; a++) {
+        const scoreOffset = a * numClasses;
+        let maxScore = -Infinity;
+        let maxClass = -1;
+
+        for (let c = 0; c < numClasses; c++) {
+            const rawScore = scoresTensor[scoreOffset + c];
+            const score = sigmoid(rawScore);
+            if (score > maxScore) {
+                maxScore = score;
+                maxClass = c;
+            }
+        }
+
+        if (maxScore < SCORE_THRESH) continue;
+
+        const className = COCO_CLASSES_90[maxClass] ?? '';
+        if (!className) continue;
+
+        // Decode box: EfficientDet outputs [ymin, xmin, ymax, xmax] normalized 0-1
+        const boxOffset = a * 4;
+        const ymin = Math.max(0, boxesTensor[boxOffset]);
+        const xmin = Math.max(0, boxesTensor[boxOffset + 1]);
+        const ymax = Math.min(1, boxesTensor[boxOffset + 2]);
+        const xmax = Math.min(1, boxesTensor[boxOffset + 3]);
+
+        // Skip degenerate boxes
+        if (xmax <= xmin || ymax <= ymin) continue;
+        // Skip boxes that cover nearly the entire image — usually background noise
+        const area = (xmax - xmin) * (ymax - ymin);
+        if (area > 0.9) continue;
+
+        detections.push({ className, score: maxScore, box: [xmin, ymin, xmax, ymax] });
+    }
+
+    if (!detections.length) return [];
+
+    // Group by class for NMS
+    const byClass = {};
+    for (const d of detections) {
+        if (!byClass[d.className]) byClass[d.className] = [];
+        byClass[d.className].push(d);
+    }
 
     const results = [];
-    for (const label of sorted) {
-        const raw = (label.text || label.label || '').trim().toLowerCase();
-        if (!raw) continue;
-        if (NOISE_LABELS.has(raw)) continue;
-
-        // Accept if confidence is good enough, OR if we have nothing yet
-        // (always keep at least one result rather than returning nothing)
-        if (label.confidence < minConfidence && results.length >= 1) continue;
-
-        const translated = translateLabel(raw, lang);
-        // In Arabic mode, drop untranslatable labels entirely
-        if (lang === 'ar' && translated === null) continue;
-
-        results.push({ raw, translated: translated ?? raw, confidence: label.confidence });
-        if (results.length >= 4) break;
+    for (const className of Object.keys(byClass)) {
+        const group = byClass[className];
+        const boxes  = group.map(d => d.box);
+        const scores = group.map(d => d.score);
+        const kept   = nms(boxes, scores, NMS_IOU_THRESH);
+        for (const idx of kept.slice(0, 2)) { // max 2 per class
+            results.push({ className: group[idx].className, score: group[idx].score });
+        }
     }
 
-    return results;
+    // Sort by score descending, cap at MAX_DETECTIONS
+    return results
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_DETECTIONS);
 }
 
-// ── Build natural English offline descriptions ────────────────────────────────
-function buildEnglishDescription(labels, mode) {
-    if (labels.length === 0) return null;
-
-    const top    = labels[0].translated;
-    const second = labels[1]?.translated;
-    const third  = labels[2]?.translated;
-
-    // Determine article for top label
-    const vowels  = /^[aeiou]/i;
-    const article = vowels.test(top) ? 'An' : 'A';
-
-    switch (mode) {
-        case 'scene':
-            if (labels.length === 1) return `${top} ahead.`;
-            if (labels.length === 2) return `${top} and ${second} ahead.`;
-            return `${top} ahead, ${second} and ${third ? third + ' ' : ''}nearby.`;
-
-        case 'object':
-            if (labels.length === 1) return `${article} ${top}.`;
-            return `${article} ${top}${second ? ', with ' + second + ' nearby' : ''}.`;
-
-        case 'people': {
-            const personTerms = /person|human|face|man|woman|boy|girl|child|people|crowd|pedestrian|passenger/i;
-            const hasPerson   = labels.some(l => personTerms.test(l.raw));
-            if (!hasPerson) return null; // caller will use no_people message
-            const others = labels
-            .filter(l => !personTerms.test(l.raw))
-            .map(l => l.translated)
-            .slice(0, 2);
-            if (others.length === 0) return 'A person detected nearby.';
-            return `A person nearby. Also: ${others.join(', ')}.`;
-        }
-
-        case '__watch__': {
-            const hazardFound = labels.find(l => HAZARD_LABELS.has(l.raw));
-            if (hazardFound) return `${hazardFound.translated} detected ahead.`;
-            const personTerms = /person|human|face|man|woman|boy|girl|child|people|crowd/i;
-            const person      = labels.find(l => personTerms.test(l.raw));
-            if (person) return 'Person nearby.';
-            return null; // CLEAR
-        }
-
-        default:
-            return `${top} ahead.`;
+// ── JPEG → Float32Array ───────────────────────────────────────────────────────
+// EfficientDet-Lite2 (MediaPipe float32 model) input: float32 [1, 448, 448, 3]
+// Values normalized 0.0–1.0. jpeg-js: npm install jpeg-js
+function jpegBase64ToFloat32(base64Jpeg) {
+    const jpegJs = require('jpeg-js');
+    const binaryStr = atob(base64Jpeg);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
     }
+    const { data, width, height } = jpegJs.decode(bytes.buffer, {
+        useTArray: true,
+        formatAsRGBA: true,
+    });
+    // RGBA → RGB Float32 normalized to [0, 1]
+    const rgb = new Float32Array(width * height * 3);
+    for (let i = 0; i < width * height; i++) {
+        rgb[i * 3]     = data[i * 4]     / 255.0; // R
+        rgb[i * 3 + 1] = data[i * 4 + 1] / 255.0; // G
+        rgb[i * 3 + 2] = data[i * 4 + 2] / 255.0; // B
+    }
+    return rgb;
 }
 
-// ── Build natural Arabic offline descriptions ─────────────────────────────────
-function buildArabicDescription(labels, mode) {
-    if (labels.length === 0) return null;
+// ── EfficientDet inference ────────────────────────────────────────────────────
+async function detectWithTFLite(base64, mode, lang) {
+    const model = await ensureModel();
+    const ImageManipulator = require('expo-image-manipulator');
 
-    const top    = labels[0].translated;
-    const second = labels[1]?.translated;
-    const third  = labels[2]?.translated;
+    const inPath = `${FileSystem.cacheDirectory}abserny_in_${Date.now()}.jpg`;
+    let resizedUri = null;
 
-    switch (mode) {
-        case 'scene':
-            if (labels.length === 1) return normalizeArabicForTTS(`${top} أمامك.`);
-            if (labels.length === 2) return normalizeArabicForTTS(`${top} و${second} أمامك.`);
-            return normalizeArabicForTTS(`${top} أمامك، و${second}${third ? ' و' + third : ''} بالقرب.`);
+    try {
+        await FileSystem.writeAsStringAsync(inPath, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+        });
 
-        case 'object':
-            if (labels.length === 1) return normalizeArabicForTTS(`${top} أمامك.`);
-            return normalizeArabicForTTS(`${top}، و${second} بالقرب.`);
+        // Resize to model input size
+        const resized = await ImageManipulator.manipulateAsync(
+            inPath,
+            [{ resize: { width: MODEL_SIZE, height: MODEL_SIZE } }],
+            { format: ImageManipulator.SaveFormat.JPEG, compress: 0.95, base64: true },
+        );
+        resizedUri = resized.uri;
 
-        case 'people': {
-            const personTerms = /person|human|face|man|woman|boy|girl|child|people|crowd|pedestrian/i;
-            const hasPerson   = labels.some(l => personTerms.test(l.raw));
-            if (!hasPerson) return null;
-            const others = labels
-            .filter(l => !personTerms.test(l.raw))
-            .map(l => l.translated)
-            .slice(0, 2);
-            if (others.length === 0) return normalizeArabicForTTS('شخص بالقرب.');
-            return normalizeArabicForTTS(`شخص بالقرب. ${others.join('، ')} أيضاً.`);
+        // Decode JPEG → Float32Array normalized 0-1
+        const inputPixels = jpegBase64ToFloat32(resized.base64);
+        console.log(`[Abserny] TFLite input: ${inputPixels.length} floats (expected: ${MODEL_SIZE * MODEL_SIZE * 3})`);
+
+        // Run inference
+        const outputs  = await model.run([inputPixels]);
+        const tensors  = Object.values(outputs);
+        console.log(`[Abserny] TFLite raw output tensors: ${tensors.length}, sizes: ${tensors.map(t => t?.length ?? 0).join(',')}`);
+
+        // Route based on output shape — handles both model variants:
+        //   Post-processed (correct model): 4 tensors [boxes, classes, scores, count]
+        //   Raw SSD (wrong model):          2 tensors [scores[N×90], boxes[N×4]]
+        if (tensors.length < 2) {
+            console.warn('[Abserny] TFLite unexpected output — fewer than 2 tensors');
+            return getOfflineMsg(lang, mode);
         }
 
-        case '__watch__': {
-            const hazardFound = labels.find(l => HAZARD_LABELS.has(l.raw));
-            if (hazardFound) {
-                const arHazard = translateLabel(hazardFound.raw, 'ar') ?? hazardFound.translated;
-                return normalizeArabicForTTS(`${arHazard} أمامك.`);
-            }
-            const personTerms = /person|human|face|man|woman|boy|girl|child|people|crowd/i;
-            if (labels.some(l => personTerms.test(l.raw))) {
-                return normalizeArabicForTTS('شخص بالقرب.');
-            }
-            return null; // واضح
-        }
+        const isPostProcessed = tensors.length >= 4;
 
-        default:
-            return normalizeArabicForTTS(`${top} أمامك.`);
+        let detections;
+        if (isPostProcessed) {
+            // ── Post-processed model (correct): 4 tensors ────────────────────
+            // tensors[0] = boxes   Float32[N×4]  ymin,xmin,ymax,xmax normalized
+            // tensors[1] = classes Float32[N]    class IDs 0-indexed
+            // tensors[2] = scores  Float32[N]    confidence 0–1
+            // tensors[3] = count   Float32[1]    valid detection count
+            detections = decodePostProcessed(tensors);
+        } else {
+            // ── Raw SSD model (wrong file — replace it): 2 tensors ───────────
+            // This path is kept as a fallback but results will be inaccurate
+            // without anchor priors. Replace the .tflite file to fix.
+            console.warn('[Abserny] Raw SSD output detected — replace model file for accurate results');
+            detections = decodeSSDOutputs(tensors[0], tensors[1]);
+        }
+        console.log(`[Abserny] TFLite detections after NMS: ${detections.length}`,
+            detections.slice(0, 3).map(d => `${d.className}:${d.score.toFixed(2)}`).join(', '));
+
+        if (!detections.length) return getOfflineMsg(lang, mode);
+        return buildDescription(detections, mode, lang);
+
+    } finally {
+        FileSystem.deleteAsync(inPath, { idempotent: true }).catch(() => {});
+        if (resizedUri) FileSystem.deleteAsync(resizedUri, { idempotent: true }).catch(() => {});
     }
 }
 
-// ── Offline messages ──────────────────────────────────────────────────────────
-const OFFLINE_MSGS = {
-    en: {
-        no_labels:   'Nothing clearly identified. Try pointing the camera more directly.',
-        no_people:   'No people detected.',
-        no_text:     'No text found.',
-        watch_clear: 'CLEAR',
-        offline_prefix: 'Offline. ',
-    },
-    ar: {
-        no_labels:   normalizeArabicForTTS('لم يُتعرَّف على شيء. حاول توجيه الكاميرا مباشرةً.'),
-        no_people:   normalizeArabicForTTS('لا يوجد أشخاص.'),
-        no_text:     normalizeArabicForTTS('لا يوجد نص.'),
-        watch_clear: 'واضح',
-        offline_prefix: normalizeArabicForTTS('وضع بلا إنترنت. '),
-    },
-};
+// ── Description builder ───────────────────────────────────────────────────────
+function getOfflineMsg(lang, mode) {
+    if (mode === '__watch__') return lang === 'ar' ? 'واضح' : 'CLEAR';
+    if (mode === 'people')    return lang === 'ar'
+        ? normalizeArabicForTTS('لا يوجد أشخاص.')
+        : 'No people detected.';
+    return lang === 'ar'
+        ? normalizeArabicForTTS('لم يُتعرَّف على شيء.')
+        : 'Nothing detected.';
+}
 
-// ── Temp file helper ──────────────────────────────────────────────────────────
+function buildDescription(detections, mode, lang) {
+    const ar = lang === 'ar';
+    const tr = (name) => ar ? (COCO_AR[name] ?? name) : name;
+
+    if (mode === '__watch__') {
+        const hazard = detections.find(d => HAZARD_CLASSES.has(d.className));
+        if (hazard) {
+            const n = tr(hazard.className);
+            return ar ? normalizeArabicForTTS(`${n} أمامك.`) : `${n} ahead.`;
+        }
+        if (detections.find(d => d.className === PERSON_CLASS)) {
+            return ar ? normalizeArabicForTTS('شخص بالقرب.') : 'Person nearby.';
+        }
+        return ar ? 'واضح' : 'CLEAR';
+    }
+
+    if (mode === 'people') {
+        const persons = detections.filter(d => d.className === PERSON_CLASS);
+        if (!persons.length) return getOfflineMsg(lang, 'people');
+        if (persons.length === 1) return ar ? normalizeArabicForTTS('شخص أمامك.') : 'One person ahead.';
+        return ar
+            ? normalizeArabicForTTS(`${persons.length} أشخاص أمامك.`)
+            : `${persons.length} people ahead.`;
+    }
+
+    // scene / object — prioritise hazards → people → everything else
+    const ordered = [
+        ...detections.filter(d => HAZARD_CLASSES.has(d.className)),
+        ...detections.filter(d => d.className === PERSON_CLASS),
+        ...detections.filter(d => !HAZARD_CLASSES.has(d.className) && d.className !== PERSON_CLASS),
+    ];
+
+    const n1  = tr(ordered[0].className);
+    const n2  = ordered[1] ? tr(ordered[1].className) : null;
+    if (ar) return normalizeArabicForTTS(n2 ? `${n1} و${n2} أمامك.` : `${n1} أمامك.`);
+    const art = /^[aeiouAEIOU]/.test(n1) ? 'An' : 'A';
+    return n2 ? `${art} ${n1} ahead, and a ${n2}.` : `${art} ${n1} ahead.`;
+}
+
+// ── ML Kit Text Recognition (read mode only) ──────────────────────────────────
+let TextRecognizer = null;
+try { TextRecognizer = require('@react-native-ml-kit/text-recognition').default; } catch (_) {}
+
 async function withTempFile(base64, fn) {
     const path = `${FileSystem.cacheDirectory}abserny_tmp_${Date.now()}.jpg`;
-    await FileSystem.writeAsStringAsync(path, base64, {
-        encoding: FileSystem.EncodingType.Base64,
-    });
-    try {
-        return await fn(path);
-    } finally {
-        FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
-    }
+    await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+    try    { return await fn(path); }
+    finally { FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {}); }
 }
 
-// ── Gemini (with key rotation) ────────────────────────────────────────────────
+async function detectWithText(base64, lang) {
+    if (!TextRecognizer) throw new Error('ML Kit text recognition not available');
+    return withTempFile(base64, async (path) => {
+        const result = await TextRecognizer.recognize(path);
+        const text   = result?.text?.trim();
+        if (!text) return lang === 'ar' ? normalizeArabicForTTS('لا يوجد نص.') : 'No text found.';
+        return lang === 'ar' ? normalizeArabicForTTS(text) : text;
+    });
+}
+
+// ── Gemini ────────────────────────────────────────────────────────────────────
 async function detectWithGemini(base64, mode, lang) {
-    let prompt;
-    if (mode === '__watch__') {
-        prompt = WATCH_PROMPTS[lang] ?? WATCH_PROMPTS.en;
-    } else {
-        const prompts = GEMINI_PROMPTS[lang] ?? GEMINI_PROMPTS.en;
-        prompt = prompts[mode] ?? prompts.scene;
-    }
+    const prompt = mode === '__watch__'
+        ? (WATCH_PROMPTS[lang] ?? WATCH_PROMPTS.en)
+        : ((GEMINI_PROMPTS[lang] ?? GEMINI_PROMPTS.en)[mode] ?? (GEMINI_PROMPTS.en)[mode]);
 
     const body = JSON.stringify({
         contents: [{ parts: [
             { inline_data: { mime_type: 'image/jpeg', data: base64 } },
             { text: prompt },
         ]}],
-        generationConfig: {
-            maxOutputTokens: MAX_TOKENS[mode]  ?? 80,
-            temperature:     TEMPERATURE[mode] ?? 0.2,
-        },
+        generationConfig: { maxOutputTokens: MAX_TOKENS[mode] ?? 80, temperature: TEMPERATURE[mode] ?? 0.2 },
     });
 
     const tryKey = async (key) => {
-        const controller = new AbortController();
-        const timeoutId  = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        const ctrl   = new AbortController();
+        const tid    = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+        const t0     = Date.now();
+        const sizeKB = Math.round(base64.length * 0.75 / 1024);
         try {
-            const response = await fetch(GEMINI_BASE + key, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: controller.signal,
-                body,
+            console.log(`[Abserny] Gemini → key ...${key.slice(-6)} payload~${sizeKB}KB`);
+            const res = await fetch(GEMINI_BASE + key, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                signal: ctrl.signal, body,
             });
-            const data = await response.json();
-            return { status: response.status, data };
-        } finally {
-            clearTimeout(timeoutId);
-        }
+            const elapsed = Date.now() - t0;
+            console.log(`[Abserny] Gemini ← HTTP ${res.status} in ${elapsed}ms`);
+            return { status: res.status, data: await res.json() };
+        } catch (err) {
+            const elapsed = Date.now() - t0;
+            if (err.name === 'AbortError') throw new Error(`Gemini timed out after ${elapsed}ms`);
+            throw new Error(`Gemini network error after ${elapsed}ms: ${err.message}`);
+        } finally { clearTimeout(tid); }
     };
 
-    const extractText = (data) => {
+    const extract = (data) => {
         if (data.error) throw new Error(data.error.message);
-        const candidate = data.candidates?.[0];
-        if (!candidate) throw new Error('no candidates');
-        if (candidate.finishReason === 'SAFETY') throw new Error('safety block');
-        const text = candidate?.content?.parts?.[0]?.text?.trim();
-        if (!text) throw new Error('empty response');
-        return text;
+        const c = data.candidates?.[0];
+        if (!c) throw new Error('no candidates');
+        if (c.finishReason === 'SAFETY') throw new Error('safety block');
+        const t = c?.content?.parts?.[0]?.text?.trim();
+        if (!t) throw new Error('empty response');
+        return t;
     };
 
-    const key1 = getActiveKey();
-    if (!key1) throw new Error('all keys exhausted');
+    let lastError = 'all keys exhausted';
+    for (let attempt = 0; attempt < RAW_KEYS.length; attempt++) {
+        const key = getActiveKey();
+        if (!key) break;
 
-    const { status: s1, data: d1 } = await tryKey(key1);
-    if (s1 === 200) return extractText(d1);
-
-    if (s1 === 429) {
-        const errMsg = (d1?.error?.message ?? '').toLowerCase();
-        const isRPD  = errMsg.includes('daily') || errMsg.includes('quota exceeded');
-        if (isRPD) markExhausted(key1);
-        rotateKey();
-        const key2 = getActiveKey();
-        if (!key2) throw new Error('all keys exhausted');
-        console.log(`[Abserny] 429 on key1 (${isRPD ? 'RPD' : 'RPM'}), retrying with key2...`);
-        const { status: s2, data: d2 } = await tryKey(key2);
-        if (s2 === 200) return extractText(d2);
-        if (s2 === 429) {
-            const errMsg2 = (d2?.error?.message ?? '').toLowerCase();
-            if (errMsg2.includes('daily') || errMsg2.includes('quota exceeded')) markExhausted(key2);
+        let status, data;
+        try {
+            ({ status, data } = await tryKey(key));
+        } catch (networkErr) {
+            throw networkErr;
         }
-        throw new Error(`429 on both keys: ${d2?.error?.message ?? 'rate limited'}`);
+
+        if (status === 200) return extract(data);
+
+        if (status === 429) {
+            const msg = (data?.error?.message ?? '').toLowerCase();
+            if (msg.includes('daily') || msg.includes('quota exceeded')) markExhausted(key);
+            rotateKey();
+            lastError = `rate limited on key ...${key.slice(-6)}`;
+            continue;
+        }
+
+        throw new Error(`Gemini HTTP ${status}: ${data?.error?.message ?? 'unknown'}`);
     }
 
-    throw new Error(`Gemini HTTP ${s1}: ${d1?.error?.message ?? 'unknown'}`);
-}
-
-// ── ML Kit label-based detection ──────────────────────────────────────────────
-async function detectWithLabels(base64, mode, lang) {
-    if (!ImageLabeler) throw new Error('ML Kit not installed');
-    const msgs = OFFLINE_MSGS[lang] ?? OFFLINE_MSGS.en;
-
-    return withTempFile(base64, async (path) => {
-        const rawLabels = await ImageLabeler.label(path);
-
-        if (!rawLabels || rawLabels.length === 0) {
-            if (mode === '__watch__') return msgs.watch_clear;
-            return mode === 'people' ? msgs.no_people : msgs.no_labels;
-        }
-
-        const labels = processLabels(rawLabels, lang);
-
-        if (labels.length === 0) {
-            if (mode === '__watch__') return msgs.watch_clear;
-            return mode === 'people' ? msgs.no_people : msgs.no_labels;
-        }
-
-        const description = lang === 'ar'
-            ? buildArabicDescription(labels, mode)
-            : buildEnglishDescription(labels, mode);
-
-        if (description === null) {
-            // null means "nothing meaningful found for this mode"
-            if (mode === '__watch__') return msgs.watch_clear;
-            if (mode === 'people')    return msgs.no_people;
-            return msgs.no_labels;
-        }
-
-        return description;
-    });
-}
-
-// ── ML Kit text recognition ───────────────────────────────────────────────────
-async function detectWithText(base64, lang) {
-    if (!TextRecognizer) throw new Error('ML Kit text recognition not installed');
-    const msgs = OFFLINE_MSGS[lang] ?? OFFLINE_MSGS.en;
-    return withTempFile(base64, async (path) => {
-        const result = await TextRecognizer.recognize(path);
-        const text   = result?.text?.trim();
-        if (!text) return msgs.no_text;
-        // If Arabic mode, normalise any Arabic text that comes back through TTS
-        return lang === 'ar' ? normalizeArabicForTTS(text) : text;
-    });
+    throw new Error(lastError);
 }
 
 // ── Main hook ─────────────────────────────────────────────────────────────────
 export function useDetection({ onQuotaExhausted } = {}) {
-    // Fires onQuotaExhausted() once per session the first time all keys are
-    // found exhausted so App.js can announce "Switching to basic mode."
-    // Resets at midnight Pacific when exhaustion clears automatically.
-    const quotaAnnouncedRef    = useRef(false);
-    const onQuotaExhaustedRef  = useRef(onQuotaExhausted);
+    const quotaAnnouncedRef   = useRef(false);
+    const onQuotaExhaustedRef = useRef(onQuotaExhausted);
     onQuotaExhaustedRef.current = onQuotaExhausted;
+
+    const modelPreloaded = useRef(false);
+    if (!modelPreloaded.current) {
+        modelPreloaded.current = true;
+        ensureModel().catch(() => {});
+    }
 
     const detect = useCallback(async (base64, mode, isConnected, lang = 'en') => {
         const hasKeys = getActiveKey() !== null;
+        console.log(`[Abserny] detect() — mode:${mode} connected:${isConnected} hasKeys:${hasKeys} lang:${lang}`);
 
-        // If keys just became exhausted, fire the callback once
         if (!hasKeys && !quotaAnnouncedRef.current && RAW_KEYS.length > 0) {
             quotaAnnouncedRef.current = true;
             onQuotaExhaustedRef.current?.();
         }
 
-        // Online — Gemini (with key rotation)
+        // Tier 1: Gemini (online)
         if (isConnected && hasKeys) {
-            // Keys are active again (e.g. new day) — reset announcement flag
             quotaAnnouncedRef.current = false;
             try {
                 const result = await detectWithGemini(base64, mode, lang);
-                // Apply Arabic TTS normalisation to Gemini output too —
-                // Gemini sometimes returns numbers or problematic forms
-                const finalResult = lang === 'ar' ? normalizeArabicForTTS(result) : result;
-                return { result: finalResult, source: 'online' };
+                return { result: lang === 'ar' ? normalizeArabicForTTS(result) : result, source: 'gemini' };
             } catch (err) {
-                console.warn('[Abserny] Gemini failed, falling back to ML Kit:', err.message);
+                console.warn(`[Abserny] Gemini FAILED: ${err.message}`);
             }
         }
 
-        // Offline — ML Kit
+        // Tier 2a: ML Kit (read mode offline)
+        if (mode === 'read') {
+            try {
+                return { result: await detectWithText(base64, lang), source: 'mlkit_text' };
+            } catch (err) {
+                console.warn(`[Abserny] Text recognition failed: ${err.message}`);
+                return { result: lang === 'ar' ? normalizeArabicForTTS('لا يوجد نص.') : 'No text found.', source: 'error' };
+            }
+        }
+
+        // Tier 2b: TFLite (all other modes offline)
         try {
-            const result = mode === 'read'
-                ? await detectWithText(base64, lang)
-                : await detectWithLabels(base64, mode, lang);
-            return { result, source: 'offline' };
+            const result = await detectWithTFLite(base64, mode, lang);
+            return { result, source: 'tflite' };
         } catch (err) {
-            console.warn('[Abserny] ML Kit error:', err.message);
-            const result = mode === '__watch__'
-                ? (lang === 'ar' ? 'واضح' : 'CLEAR')
-                : (lang === 'ar'
-                    ? normalizeArabicForTTS('فشل الكشف. تحقق من الاتصال.')
-                    : 'Detection failed. Check your connection.');
-            return { result, source: 'error' };
+            console.warn(`[Abserny] TFLite FAILED: ${err.message}`);
+            return {
+                result: mode === '__watch__'
+                    ? (lang === 'ar' ? 'واضح' : 'CLEAR')
+                    : (lang === 'ar'
+                        ? normalizeArabicForTTS('لم يُتعرَّف على شيء.')
+                        : 'Detection unavailable.'),
+                source: 'error',
+            };
         }
     }, []);
 

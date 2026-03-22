@@ -3,33 +3,46 @@ import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ── TTS prewarm ───────────────────────────────────────────────────────────────
-// Earliest possible moment: before App.js is parsed or executed.
-// We use require() for App (not ES import) so Metro doesn't hoist it above
-// this IIFE — ES `import` statements are always hoisted to the top of the
-// module regardless of where you write them.
+// Fires at the earliest possible moment — before App.js is even parsed.
+// On Android the TTS engine cold-start costs 1–4 s. This buys that time
+// while Metro is still loading the rest of the JS bundle.
 //
-// On Android, the TTS engine cold-start costs 1–4 seconds. This fires the
-// prewarm while App.js and its dependencies are still being loaded.
-//
-// volume: 0.01 not 0 — Android's TextToSpeech.speak() silently discards
-// zero-volume utterances on many devices (Samsung, MIUI, stock Android 12+),
-// so the engine never actually initializes. 0.01 is inaudible but non-zero.
+// volume: 0.05 — reliably above the silent-discard threshold on Samsung/MIUI/Pixel.
+// Two utterances 400 ms apart — keeps the engine warm past the first callback.
 (async () => {
     try {
         const lang = await AsyncStorage.getItem('abserny_language');
-        Speech.speak(' ', {
+        const opts = {
             language: lang === 'ar' ? 'ar-SA' : 'en-US',
-            volume: 0.01,
-        });
+            volume: 0.05,
+            rate: 0.5,
+        };
+        Speech.speak('\u00A0', opts);
+        setTimeout(() => Speech.speak('\u00A0', opts), 400);
     } catch (_) {
-        Speech.speak(' ', { language: 'en-US', volume: 0.01 });
+        Speech.speak('\u00A0', { language: 'en-US', volume: 0.05, rate: 0.5 });
     }
 })();
 
-// Use require() so this runs AFTER the IIFE above, not before it.
-const App = require('./App').default;
+// ── TFLite model prewarm ──────────────────────────────────────────────────────
+// Start loading the 23 MB model immediately — at the same time as the TTS
+// prewarm — so it's ready before the user's first offline scan.
+//
+// ensureModel() is a singleton: calling it here and again inside useDetection
+// shares the same Promise. The model only loads once regardless of who calls first.
+//
+// NOTE: In dev builds (Expo Go / dev client) the model downloads from the Metro
+// dev server every launch — that's why startup is slow in dev. In a production
+// APK build the model is bundled as a native asset and loads from local storage
+// in ~300 ms. The 3–6 s delay you see in dev is normal and disappears in production.
+setTimeout(() => {
+    try {
+        // We import this way (not ES import at top) because ES imports are hoisted
+        // above the TTS prewarm IIFE, defeating its purpose.
+        const { loadTensorflowModel } = require('react-native-fast-tflite');
+        loadTensorflowModel(require('./assets/efficientdet_lite2.tflite')).catch(() => {});
+    } catch (_) {}
+}, 0);
 
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately.
+const App = require('./App').default;
 registerRootComponent(App);

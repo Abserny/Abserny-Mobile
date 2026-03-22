@@ -1,1 +1,0 @@
-{"version":3,"names":["WorkletsError","createSynchronizable","_value"],"sourceRoot":"../../../src","sources":["memory/synchronizable.ts"],"mappings":"AAAA,YAAY;;AAEZ,SAASA,aAAa,QAAQ,wBAAwB;AAGtD,OAAO,SAASC,oBAAoBA,CAClCC,MAAc,EACU;EACxB,MAAM,IAAIF,aAAa,CAAC,iDAAiD,CAAC;AAC5E","ignoreList":[]}

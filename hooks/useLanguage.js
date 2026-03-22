@@ -3,23 +3,16 @@
  * Stores language choice + onboarding completion in AsyncStorage.
  * Provides t() translation, mode strings, and Gemini prompts.
  *
- * Fixes:
- *  1. resetLanguage now also clears the persisted mode index (abserny_mode_index)
- *     so a full reset truly starts fresh.
- *  2. t() is null-safe — if called while lang is still null (loading state)
- *     it falls back to English rather than returning the key string.
- *
- * Arabic pronunciation fixes (v2.1):
- *  - All Arabic spoken strings now go through normalizeArabicForTTS()
- *    from useDetection. This fixes:
- *      · "جارٍ" → "يجري"  (defective noun nunation bug on ar-SA engines)
- *      · "انقر" → "اِنقُر" (unvowelled imperative mispronounced on Samsung TTS)
- *      · "أبصرني" → "أَبصِرني" (wrong stress on some engines)
- *      · "وضع ال" → "وَضع ال" (missing fatha causes flat reading)
- *      · "مرر" → "مَرِّر" (shadda sometimes dropped)
- *      · "4 ثوانٍ" → "أربعة ثوانٍ" (ASCII digit read in English on some engines)
- *  - Note: normalizeArabicForTTS is imported from useDetection to keep the
- *    fix in one place. If you move it, update the import here.
+ * FIXES in this version:
+ *   1. settings_selected() no longer double-normalises the item argument.
+ *   2. resetLanguage now also clears the persisted mode index.
+ *   3. t() is null-safe — falls back to English while lang is still loading.
+ *   4. [NEW] Language switch no longer calls I18nManager.forceRTL() or reloadApp().
+ *      RTL is already handled per-component via `lang === 'ar'` checks throughout
+ *      every component (flexDirection, textAlign, writingDirection). The global
+ *      I18nManager flag is redundant here and was the sole reason the app
+ *      restarted every time the user changed language. Removing it makes language
+ *      switching instant with zero disruption.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -30,21 +23,15 @@ const KEY_LANG       = 'abserny_language';
 const KEY_ONBOARDED  = 'abserny_onboarded';
 const KEY_MODE       = 'abserny_mode_index';
 
-// ── Shorthand so Arabic string literals stay readable in the source ───────────
-// All Arabic values that will be spoken are wrapped with n() before export.
-// Visual-only strings (hint_ready, perm_title etc.) are NOT wrapped.
 const n = normalizeArabicForTTS;
 
 // ── All UI + speech strings ───────────────────────────────────────────────────
 export const STRINGS = {
     en: {
-        // Onboarding
         lang_welcome:     'Welcome to Abserny. Swipe right for English. Swipe left for Arabic. Double tap to confirm.',
         lang_selected_en: 'English selected. Double tap to confirm.',
         lang_selected_ar: 'Arabic selected. Double tap to confirm.',
         lang_confirmed:   'Got it.',
-
-        // Tutorial steps
         tutorial_intro:   "Let's learn the gestures. I'll guide you through each one.",
         tut_double_tap:   'First gesture: Double tap anywhere to scan. Try it now.',
         tut_double_done:  'Perfect. Double tap will scan and describe what the camera sees.',
@@ -57,8 +44,6 @@ export const STRINGS = {
         tut_swipe_up:     'Last gesture: Swipe up to toggle Watch Mode. It scans continuously and speaks when something changes. Try it.',
         tut_swipe_up_done:'Watch mode is now on. Swipe up again to turn it off.',
         tut_finish:       'You know all the gestures. Double tap to start scanning.',
-
-        // Settings
         settings_open:        'Settings. Swipe to navigate. Double tap to select. Triple tap to close.',
         settings_repeat_tour: 'Repeat gesture tutorial.',
         settings_change_lang: 'Change language.',
@@ -67,10 +52,7 @@ export const STRINGS = {
         settings_closed:      'Settings closed.',
         tour_restarting:      'Starting tutorial again.',
         lang_restarting:      'Language picker. Swipe right for English. Swipe left for Arabic. Double tap to confirm.',
-
-        // Boot
         ready:            (mode, hint) => `Abserny ready. ${mode}. ${hint}`,
-        // Scanning
         scanning:         'Scanning.',
         analyzing:        'Analyzing.',
         repeat_empty:     'Nothing to repeat.',
@@ -78,11 +60,9 @@ export const STRINGS = {
         auto_on:          'Auto scan on. Scanning every four seconds. Double tap to stop.',
         auto_off:         'Auto scan off.',
         no_permission:    'Camera permission required. Please allow in settings.',
-        // Permission screen
         perm_title:       'Camera Access Required',
         perm_body:        'Abserny needs your camera to describe your surroundings.',
         perm_button:      'Allow Camera',
-        // Hints (visual only — not spoken)
         hint_ready:       'DOUBLE TAP TO SCAN',
         hint_auto:        'DOUBLE TAP TO STOP',
         hint_scanning:    'ANALYZING...',
@@ -90,26 +70,20 @@ export const STRINGS = {
         gesture_prev:     'prev',
         gesture_next:     'next',
         gesture_cycle:    'cycle',
-        // Watch mode
         watch_on:         "Watch mode on. I'll speak when something changes.",
         watch_off:        'Watch mode off.',
         watch_toggle:     'Watch mode.',
         hint_watch:       'SWIPE UP TO STOP',
-        // Speech config
         speechLang:       'en-US',
         speechRate:       0.88,
         isRTL:            false,
     },
 
     ar: {
-        // Onboarding
-        // NOTE: These use n() for pronunciation fixes. Visual-only strings skip n().
         lang_welcome:     n('مرحباً بك في أَبصِرني. مَرِّر لليمين للإنجليزية. مَرِّر لليسار للعربية. اِنقُر مرتين للتأكيد.'),
         lang_selected_en: n('تم اختيار الإنجليزية. اِنقُر مرتين للتأكيد.'),
         lang_selected_ar: n('تم اختيار العربية. اِنقُر مرتين للتأكيد.'),
         lang_confirmed:   n('تمَّ الأمر.'),
-
-        // Tutorial
         tutorial_intro:   n('لنتعلم الإيماءات. سأرشدك خطوة بخطوة.'),
         tut_double_tap:   n('الإيماءة الأولى: اِنقُر مرتين في أي مكان للمسح. جرّبها الآن.'),
         tut_double_done:  n('ممتاز. النقر المزدوج يمسح ويصف ما تراه الكاميرا.'),
@@ -122,20 +96,15 @@ export const STRINGS = {
         tut_swipe_up:     n('الأخيرة: مَرِّر لأعلى لتفعيل وضع المراقبة. يمسح تلقائياً ويتحدث عند التغيير. جرّب الآن.'),
         tut_swipe_up_done:n('وضع المراقبة مفعّل. مَرِّر لأعلى مجدداً لإيقافه.'),
         tut_finish:       n('تعلمت كل الإيماءات. اِنقُر مرتين الآن للبدء.'),
-
-        // Settings
         settings_open:        n('الإعدادات. مَرِّر للتنقل. اِنقُر مرتين للاختيار. اِنقُر ثلاثاً للإغلاق.'),
         settings_repeat_tour: n('إعادة شرح الإيماءات.'),
         settings_change_lang: n('تغيير اللغة.'),
         settings_close:       n('إغلاق الإعدادات.'),
-        settings_selected:    (item) => n(`${item}. اِنقُر مرتين للتأكيد.`),
+        settings_selected: (item) => `${item}. اِنقُر مرتين للتأكيد.`,
         settings_closed:      n('تمَّ إغلاق الإعدادات.'),
         tour_restarting:      n('يجري إعادة الشرح.'),
         lang_restarting:      n('اختيار اللغة. مَرِّر لليمين للإنجليزية. مَرِّر لليسار للعربية. اِنقُر مرتين للتأكيد.'),
-
-        // Boot
         ready:            (mode, hint) => n(`أَبصِرني جاهز. ${mode}. ${hint}`),
-        // Scanning
         scanning:         n('يجري المسح.'),
         analyzing:        n('يجري التحليل.'),
         repeat_empty:     n('لا يوجد شيء للتكرار.'),
@@ -143,11 +112,9 @@ export const STRINGS = {
         auto_on:          n('المسح التلقائي مفعّل. كل أربع ثوانٍ. اِنقُر مرتين للإيقاف.'),
         auto_off:         n('تمَّ إيقاف المسح التلقائي.'),
         no_permission:    n('يلزم السماح باستخدام الكاميرا من الإعدادات.'),
-        // Permission screen (visual + spoken)
         perm_title:       'يلزم الوصول إلى الكاميرا',
         perm_body:        n('يحتاج أَبصِرني إلى الكاميرا لوصف محيطك.'),
         perm_button:      'السماح بالكاميرا',
-        // Hints (visual only — NOT spoken, so no n() needed)
         hint_ready:       'اِنقُر مرتين للمسح',
         hint_auto:        'اِنقُر مرتين للإيقاف',
         hint_scanning:    'يجري التحليل...',
@@ -155,12 +122,10 @@ export const STRINGS = {
         gesture_prev:     'السابق',
         gesture_next:     'التالي',
         gesture_cycle:    'تدوير',
-        // Watch mode
         watch_on:         n('وَضع المراقبة مفعّل. سأخبرك عند تغيّر المشهد.'),
         watch_off:        n('تمَّ إيقاف المراقبة.'),
         watch_toggle:     n('وَضع المراقبة.'),
         hint_watch:       'مَرِّر لأعلى للإيقاف',
-        // Speech config
         speechLang:       'ar-SA',
         speechRate:       0.82,
         isRTL:            true,
@@ -189,22 +154,18 @@ export const GEMINI_PROMPTS = {
 - Use spatial directions: ahead, to your left, to your right, nearby
 - Never start with "I see", "I can see", "There is"
 - Example: "Steps ahead, a table to your left, person nearby."`,
-
         object: `You are an assistant for a blind person identifying objects. ONE sentence, max 15 words.
 - Name the object precisely with one important detail
 - Never start with "I see"
 - Example: "A blue medicine bottle with the cap open."`,
-
         read:   `Read ALL text visible in this image exactly as written, left to right, top to bottom.
 If no text is visible, say only: "No text found."
 Do NOT describe the image. ONLY read the text.`,
-
         people: `You are a navigation assistant for a blind person. Describe people in the scene. ONE sentence, max 20 words.
 - Count people, say where they are, what they're doing if relevant
 - If no people: "No people detected."
 - Example: "Two people ahead, one walking toward you."`,
     },
-
     ar: {
         scene:  `أنت مساعد تنقل للمكفوفين. يجب أن تكون إجابتك باللغة العربية الفصحى فقط بدون أي كلمات إنجليزية أو أرقام.
 صِف المشهد بجملة عربية واحدة واضحة، بحد أقصى 12 كلمة.
@@ -213,15 +174,12 @@ Do NOT describe the image. ONLY read the text.`,
 - لا تبدأ بـ "أرى" أو "يوجد" أو "هناك"
 - لا تستخدم الأرقام، اكتبها بالكلمات
 مثال: "درجات أمامك، طاولة على يسارك."`,
-
         object: `أنت مساعد للمكفوفين. يجب أن تكون إجابتك باللغة العربية الفصحى فقط بدون أي كلمات إنجليزية.
 جملة عربية واحدة، بحد أقصى 12 كلمة. سمِّ الشيء بدقة مع تفصيل مفيد. لا تبدأ بـ "أرى".
 مثال: "زجاجة دواء زرقاء والغطاء مفتوح."`,
-
         read:   `اقرأ كل النصوص المرئية في هذه الصورة بالضبط كما هي مكتوبة (سواء كانت عربية أو إنجليزية أو غيرها).
 إذا لم يوجد نص، قل فقط: "لا يوجد نص."
 لا تصف الصورة. اقرأ النص فقط.`,
-
         people: `أنت مساعد تنقل للمكفوفين. يجب أن تكون إجابتك باللغة العربية الفصحى فقط بدون أي كلمات إنجليزية.
 صِف الأشخاص بجملة عربية واحدة، بحد أقصى 15 كلمة. عدد الأشخاص ومكانهم وما يفعلونه إن كان مهماً.
 إذا لم يوجد أشخاص، قل فقط: "لا يوجد أشخاص."`,
@@ -250,6 +208,9 @@ export function useLanguage() {
     const chooseLang = useCallback(async (code) => {
         await AsyncStorage.setItem(KEY_LANG, code);
         setLang(code);
+        // RTL is handled per-component via lang === 'ar' checks.
+        // No I18nManager.forceRTL() or reloadApp() needed — removing these
+        // eliminates the disruptive full restart on every language change.
     }, []);
 
     const completeOnboarding = useCallback(async () => {

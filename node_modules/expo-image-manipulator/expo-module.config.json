@@ -1,0 +1,15 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["ImageManipulatorModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.imagemanipulator.ImageManipulatorModule"],
+    "publication": {
+      "groupId": "host.exp.exponent",
+      "artifactId": "expo.modules.imagemanipulator",
+      "version": "14.0.8",
+      "repository": "local-maven-repo"
+    }
+  }
+}

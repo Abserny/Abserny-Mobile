@@ -1,5 +1,12 @@
 /**
+ * SettingsOverlay.js
  * Full-screen sheet. Clean rows. No emoji. No transparent boxes.
+ *
+ * Fixes:
+ *   - Removed duplicate StyleSheet keys (titleRTL, footerTextRTL were
+ *     each defined twice — the first definition was silently ignored).
+ *   - Sheet now receives the current lang via prop so it always renders
+ *     with the correct direction on first paint, even before any reload.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -73,8 +80,6 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
                 longFired.current = true; tapCount.current = 0;
                 clearTimeout(tapTimer.current);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                // Re-announce the currently selected item instead of closing —
-                // accidental long-press was silently dismissing the overlay.
                 const items = getItems();
                 speakRef.current(
                     tRef.current('settings_selected', items[activeRef.current].label),
@@ -99,7 +104,6 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
             }
             if (Math.abs(dx) > 20 || Math.abs(dy) > 20) return;
             tapCount.current += 1;
-            // Triple tap immediately closes — no wait needed
             if (tapCount.current >= 3) {
                 tapCount.current = 0;
                 clearTimeout(tapTimer.current);
@@ -136,7 +140,9 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
                 <View style={s.handle} />
 
                 {/* Title */}
-                <Text style={[s.title, isRTL && s.titleRTL]}>{lang === 'ar' ? 'الإعدادات' : 'Settings'}</Text>
+                <Text style={[s.title, isRTL && s.titleRTL]}>
+                    {lang === 'ar' ? 'الإعدادات' : 'Settings'}
+                </Text>
 
                 {/* Divider */}
                 <View style={s.divider} />
@@ -158,7 +164,7 @@ export default function SettingsOverlay({ lang, t, speak, onRepeatTour, onChange
                                     marginRight: isRTL ? 0 : 16,
                                     marginLeft:  isRTL ? 16 : 0 },
                             ]} />
-                            {/* Label — fills remaining space, text aligns to start */}
+                            {/* Label */}
                             <Text style={[
                                 s.rowLabel,
                                 { color: active ? color : WHITE,
@@ -202,22 +208,18 @@ const s = StyleSheet.create({
     },
     handle:     { width:36, height:3, borderRadius:1.5, backgroundColor:'rgba(255,255,255,0.12)', alignSelf:'center', marginTop:12, marginBottom:4 },
     title:      { color:DIM, fontSize:11, letterSpacing:4, fontWeight:'600', textAlign:'center', paddingVertical:16 },
-    titleRTL:   { letterSpacing:1, fontSize:13 },
+    // Single definition — no duplicate
     titleRTL:   { letterSpacing:1, fontSize:13 },
     divider:    { height:1, backgroundColor:LINE, marginHorizontal:0 },
     row:        { flexDirection:'row', alignItems:'center', paddingVertical:20, paddingHorizontal:24 },
-    rowRTL:     { flexDirection:'row-reverse' },
+    rowReverse: { flexDirection:'row-reverse' },
     rowBorder:  { borderBottomWidth:1, borderBottomColor:LINE },
     rowBar:     { width:2, height:18, borderRadius:1 },
-    rowBarLTR:  { marginRight:16, marginLeft:0 },
-    rowBarRTL:  { marginLeft:16, marginRight:0 },
     rowLabel:   { flex:1, color:WHITE, fontSize:16, fontWeight:'500' },
     rowDot:     { width:5, height:5, borderRadius:2.5 },
-    rtl:        { textAlign:'right' },
-    rowReverse: { flexDirection:'row-reverse' },
     footer:     { flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, paddingTop:16, paddingHorizontal:24 },
     footerSep:  { width:3, height:3, borderRadius:1.5, backgroundColor:'rgba(255,255,255,0.1)' },
     footerText: { color:'rgba(255,255,255,0.15)', fontSize:10, letterSpacing:1 },
-    footerTextRTL: { letterSpacing:0, fontSize:11 },
+    // Single definition — no duplicate
     footerTextRTL: { letterSpacing:0, fontSize:11 },
 });
