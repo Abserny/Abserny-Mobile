@@ -5,25 +5,25 @@
     "version": "2.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/images/icon.png",
     "splash": {
-      "image": "./assets/logorm.png",
+      "image": "./assets/images/logorm.png",
       "resizeMode": "contain",
       "backgroundColor": "#161717"
     },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.abserny.app",
-      "icon": "./assets/iconlogo.png",
+      "icon": "./assets/images/iconlogo.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Abserny uses your camera to describe your surroundings."
       }
     },
     "android": {
       "package": "com.abserny.app",
-      "icon": "./assets/icon.png",
+      "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/iconLogo.png",
+        "foregroundImage": "./assets/images/iconLogo.png",
         "backgroundColor": "#000000"
       },
       "permissions": [
