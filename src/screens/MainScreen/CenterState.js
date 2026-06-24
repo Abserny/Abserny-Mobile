@@ -1,7 +1,8 @@
 /**
- * screens/MainScreen/CenterState.js
- * Center of screen: ready ring, scan ring, wave bars, error, state badges.
- * Pure display — props in, JSX out.
+ * screens/MainScreen/CenterState.js  — Flat Minimal
+ *
+ * One dot. One ring. Three bars. A cross.
+ * State communicated through opacity fades only — no scale, no rotation.
  */
 
 import React from 'react';
@@ -17,6 +18,7 @@ export function CenterState({
     activeColor,
     modeColor,
     pulseOpacity,
+    pulseScale,   // kept in signature for compatibility — not used
     watchOpacity,
     watching,
     autoScan,
@@ -30,76 +32,79 @@ export function CenterState({
     return (
         <View style={s.center} pointerEvents="none">
 
-            {/* Watch ring */}
+            {/* Watch ring — hairline, barely there, always absolute behind everything */}
             {watching && (
                 <Animated.View style={[s.watchRing, {
-                    borderColor: GREEN + '90',
+                    borderColor: GREEN + '50',
                     opacity: watchOpacity,
                 }]} />
             )}
 
-            {/* Ready ring — opacity breath */}
-            {isReady && (
-                <View style={s.readyOuter}>
-                    <Animated.View style={[s.readyRing, {
-                        borderColor: activeColor + '50',
-                        opacity: pulseOpacity,
+            {/* Column: optional badge above → state indicator */}
+            <View style={s.indicatorColumn}>
+
+                {/* AUTO badge — above the ready dot */}
+                {autoScan && isReady && !watching && (
+                    <View style={[s.stateBadge, {
+                        borderColor: AMBER + '30',
+                        backgroundColor: 'rgba(240,168,48,0.06)',
                     }]}>
-                        <View style={[s.readyDot, { backgroundColor: activeColor }]} />
-                    </Animated.View>
-                </View>
-            )}
+                        <View style={[s.stateDot, { backgroundColor: AMBER }]} />
+                        <Text style={[s.stateBadgeText, { color: AMBER }]}>
+                            {isRTL ? 'تلقائي' : 'AUTO'}
+                        </Text>
+                    </View>
+                )}
 
-            {/* Scanning */}
-            {isScanning && (
-                <View style={s.scanningBox}>
-                    <ScanRing color={modeColor} />
-                    <Text style={[s.scanLabel, { color: modeColor, letterSpacing: 6 }]}>
-                        {isRTL ? 'مسح' : 'SCAN'}
-                    </Text>
-                </View>
-            )}
+                {/* WATCH badge — above the watch ring */}
+                {watching && (
+                    <View style={[s.stateBadge, {
+                        borderColor: GREEN + '30',
+                        backgroundColor: 'rgba(78,219,160,0.06)',
+                    }]}>
+                        <LiveDot color={GREEN} />
+                        <Text style={[s.stateBadgeText, { color: GREEN }]}>
+                            {isRTL ? 'مراقبة' : 'WATCH'}
+                        </Text>
+                    </View>
+                )}
 
-            {/* Speaking wave */}
-            {isSpeaking && (
-                <View style={s.waveRow}>
-                    {[0, 110, 220, 110, 0].map((delay, i) => (
-                        <WaveBar key={i} color={activeColor} delay={delay} />
-                    ))}
-                </View>
-            )}
+                {/* Ready — single fading dot */}
+                {isReady && (
+                    <Animated.View style={[s.readyDot, {
+                        backgroundColor: activeColor,
+                        opacity: pulseOpacity,
+                    }]} />
+                )}
 
-            {/* Error */}
-            {isError && (
-                <View style={[s.errorRing, { borderColor: RED + '60' }]}>
-                    <View style={[s.errorLine1, { backgroundColor: RED }]} />
-                    <View style={[s.errorLine2, { backgroundColor: RED }]} />
-                </View>
-            )}
+                {/* Scanning — thin ring + label */}
+                {isScanning && (
+                    <View style={{ alignItems: 'center' }}>
+                        <ScanRing color={modeColor} />
+                        <Text style={[s.scanLabel, { color: modeColor }]}>
+                            {isRTL ? 'مسح' : 'SCAN'}
+                        </Text>
+                    </View>
+                )}
 
-            {/* AUTO badge */}
-            {autoScan && isReady && !watching && (
-                <View style={[s.stateBadge, {
-                    borderColor: AMBER + '40', backgroundColor: AMBER + '10', top: -72,
-                }]}>
-                    <View style={[s.stateDot, { backgroundColor: AMBER }]} />
-                    <Text style={[s.stateBadgeText, { color: AMBER }]}>
-                        {isRTL ? 'تلقائي' : 'AUTO'}
-                    </Text>
-                </View>
-            )}
+                {/* Speaking — three quiet bars */}
+                {isSpeaking && (
+                    <View style={s.waveRow}>
+                        {[0, 180, 360].map((delay, i) => (
+                            <WaveBar key={i} color={activeColor} delay={delay} />
+                        ))}
+                    </View>
+                )}
 
-            {/* WATCH badge */}
-            {watching && (
-                <View style={[s.stateBadge, {
-                    borderColor: GREEN + '40', backgroundColor: GREEN + '10', top: -72,
-                }]}>
-                    <LiveDot color={GREEN} />
-                    <Text style={[s.stateBadgeText, { color: GREEN }]}>
-                        {isRTL ? 'مراقبة نشطة' : 'WATCHING'}
-                    </Text>
-                </View>
-            )}
+                {/* Error — plain X */}
+                {isError && (
+                    <View style={s.errorMark}>
+                        <View style={[s.errorLine1, { backgroundColor: RED }]} />
+                        <View style={[s.errorLine2, { backgroundColor: RED }]} />
+                    </View>
+                )}
+
+            </View>
         </View>
     );
 }

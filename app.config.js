@@ -2,19 +2,25 @@
  * app.config.js — Dynamic Expo config
  *
  * Keys are read from environment variables at build time (EAS Secrets or .env).
- * Asset paths updated to reflect new directory structure:
- *   images → assets/images/
- *   model  → assets/models/
  *
- * HOW TO SET KEYS FOR EAS BUILDS:
+ * HOW TO SET KEYS FOR LOCAL DEVELOPMENT:
+ *   1. Create .env in project root (already in .gitignore):
+ *        GEMINI_KEY_1=AIzaSy...your_key
+ *        GEMINI_KEY_2=AIzaSy...second_key   (optional)
+ *   2. Run: npx expo start --clear
+ *
+ * HOW TO SET KEYS FOR EAS BUILDS (no .env file needed):
  *   eas secret:create --name GEMINI_KEY_1 --value "AIza..."
  *   eas build --platform android --profile preview
  *
- * HOW TO SET KEYS FOR LOCAL DEVELOPMENT:
- *   Create .env in project root (already in .gitignore):
- *     GEMINI_KEY_1=AIzaSy...
- *   Then: npx expo start
+ * WHY dotenv HERE:
+ *   app.config.js runs in Node.js at Metro startup. The dotenv call here
+ *   loads .env into process.env so the geminiKeys array below is populated.
+ *   Without this line, process.env.GEMINI_KEY_1 is always undefined locally
+ *   even if .env exists — dotenv is NOT loaded automatically by Expo.
  */
+
+require('dotenv').config();
 
 const keys = [
     process.env.GEMINI_KEY_1,
@@ -26,25 +32,27 @@ module.exports = {
     expo: {
         name: 'Abserny',
         slug: 'abserny',
-        version: '2.1.0',
+        version: '2.0.0',
         orientation: 'portrait',
         userInterfaceStyle: 'dark',
         icon: './assets/images/iconLogo.png',
         splash: {
             image: './assets/images/logorm.png',
             resizeMode: 'contain',
-            backgroundColor: '#161717',
+            backgroundColor: '#0e0f11',   // ← was '#161717', now pure dark
         },
         ios: {
             supportsTablet: false,
             bundleIdentifier: 'com.abserny.app',
-            icon: './assets/images/iconLogo.png',
+            buildNumber: '2.0.0',
+            icon: './assets/images/iconlogo.png',
             infoPlist: {
                 NSCameraUsageDescription: 'Abserny uses your camera to describe your surroundings.',
             },
         },
         android: {
             package: 'com.abserny.app',
+            versionCode: 2,
             icon: './assets/images/iconLogo.png',
             adaptiveIcon: {
                 foregroundImage: './assets/images/iconLogo.png',

@@ -171,8 +171,39 @@ export function useWatchMode({ cameraRef, detect, speak, lang, isConnected }) {
             });
             if (!photo?.base64 || !watchingRef.current) return;
 
+            // ── Blind frame guard ─────────────────────────────────────────────
+            // If the camera is in a pocket or facing a wall, the frame is nearly
+            // all black. Sending it to Gemini wastes an API call and produces
+            // nonsense ("a dark room") that gets spoken unnecessarily.
+            //
+            // Strategy: sample the base64 length as a proxy for image complexity.
+            // A near-black JPEG at quality:0.25 compresses to very few bytes —
+            // typically under 1500 bytes of base64 (~1.1KB decoded).
+            // A real scene at the same settings is 60KB–200KB+.
+            // This threshold is robust without needing pixel-level decoding.
+            //
+            // THRESHOLD: 2000 base64 chars ≈ 1.5KB decoded.
+            // Below this = camera obstructed or in total darkness → skip frame.
+            if (photo.base64.length < 2000) {
+                console.log('[WatchMode] Blind frame skipped — camera likely obstructed.');
+                return;
+            }
+
+            // Resize before sending to Gemini — same reason as manual scan.
+            // Full-res at quality:0.25 is still 1500-2500KB; 1024px brings it to ~80KB.
+            let base64ToSend = photo.base64;
+            try {
+                const ImageManipulator = require('expo-image-manipulator');
+                const resized = await ImageManipulator.manipulateAsync(
+                    photo.uri,
+                    [{ resize: { width: 1024 } }],
+                    { format: ImageManipulator.SaveFormat.JPEG, compress: 0.25, base64: true },
+                );
+                base64ToSend = resized.base64;
+            } catch (_) {}
+
             const { result } = await detectRef.current(
-                photo.base64, '__watch__', connRef.current, langRef.current,
+                base64ToSend, '__watch__', connRef.current, langRef.current,
                 lastResultRef.current,   // context: last spoken description for Gemini diff
             );
 

@@ -1,45 +1,41 @@
 /**
  * components/overlays/SettingsOverlay.js
  *
- * Gesture model:
- *   swipe left/right  → navigate items (wraps around — no dead ends)
- *   single tap        → re-announce current item
- *   double tap        → execute current item
- *   triple tap        → close
- *   long press        → re-announce current item
+ * Design: centered frosted-glass card over a dark blurred backdrop.
+ * - BlurView backdrop (intensity 28, dark tint)
+ * - Bordered card, centered, no bottom-sheet behavior
+ * - Items stagger-fade in at 40ms intervals, fast and clean
+ * - No translateY on entrance — opacity only
+ * - All solid colors, no alpha string hacks
  *
- * Structure (flat list with spoken section headers):
+ * Gestures (unchanged):
+ *   swipe left/right → navigate items (wraps)
+ *   single tap       → re-announce current item
+ *   double tap       → execute current item
+ *   triple tap       → close
+ *   long press       → re-announce current item
  *
- *   ── Tutorial ──────────────────────
- *   [H] Tutorial         ← section header (swipe past, spoken not selectable)
- *   [ ] Repeat tutorial
- *   [ ] Change language
- *
- *   ── Experience ────────────────────
- *   [H] Experience       ← section header
- *   [ ] Priority vibration: on / off
- *
- * Section headers are announced when reached so the user has orientation,
- * but they cannot be double-tapped to execute — swipe moves past them.
- * This gives the "categories" feel without requiring a separate UI model.
- *
- * WRAP: swiping left from item 0 → wraps to last item.
- *       swiping right from last item → wraps to item 0.
- *       Same as mode navigation in the main screen.
+ * Tap window: 380ms (matches main app fix)
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Animated, PanResponder } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import {
-    SURFACE, ON_SURFACE, ON_SURFACE_LOW, ON_SURFACE_MED,
-    CYAN, AMBER, GREEN,
-} from '../../constants/colors';
+    View, Text, StyleSheet, Animated, PanResponder, Dimensions,
+} from 'react-native';
+import { BlurView } from 'expo-blur';
+import * as Haptics from 'expo-haptics';
+import { CYAN, AMBER, GREEN } from '../../constants/colors';
 
-const LINE        = 'rgba(255,255,255,0.06)';
-const ITEM_COLORS = [CYAN, AMBER, GREEN];
+const { width: W } = Dimensions.get('window');
 
-// Item type: 'action' = selectable, 'header' = section label (spoken, not selectable)
+// ── Palette ───────────────────────────────────────────────────────────────────
+const CARD_BG     = '#0D1016';
+const CARD_BORDER = '#1E2330';
+const TEXT_HI     = '#EEEEF0';
+const TEXT_MID    = '#5A5E6E';
+const TEXT_LO     = '#2A2D38';
+const ROW_LINE    = '#181B24';
+
 const ITEM_TYPE_ACTION = 'action';
 const ITEM_TYPE_HEADER = 'header';
 
@@ -51,11 +47,11 @@ export default function SettingsOverlay({
     priorityHapticsEnabled,
     onClose,
 }) {
-    const [activeIndex, setActiveIndex] = useState(0);  // index within ACTION items only
+    const [activeIndex, setActiveIndex] = useState(0);
 
-    const backdropOpacity = useRef(new Animated.Value(0)).current;
-    const panelSlide      = useRef(new Animated.Value(60)).current;
-    const panelOpacity    = useRef(new Animated.Value(0)).current;
+    const backdropOp  = useRef(new Animated.Value(0)).current;
+    const cardOp      = useRef(new Animated.Value(0)).current;
+    const cardScale   = useRef(new Animated.Value(0.96)).current;
 
     const activeRef            = useRef(0);
     const tRef                 = useRef(t);
@@ -76,13 +72,9 @@ export default function SettingsOverlay({
     hapticsEnabledRef.current  = priorityHapticsEnabled;
     isRTLRef.current           = lang === 'ar';
 
-    // ── Item list ─────────────────────────────────────────────────────────────
-    // Built fresh on every read so toggle label always reflects current state.
-    // Headers are spoken when navigated to but cannot be executed.
     const getItems = () => {
         const ar = isRTLRef.current;
         return [
-            // ── Tutorial section ──────────────────────────────────────────
             {
                 type:  ITEM_TYPE_HEADER,
                 label: ar ? 'الشرح' : 'Tutorial',
@@ -99,7 +91,6 @@ export default function SettingsOverlay({
                 action: () => onChangeLangRef.current?.(),
                 color:  AMBER,
             },
-            // ── Experience section ────────────────────────────────────────
             {
                 type:  ITEM_TYPE_HEADER,
                 label: ar ? 'التجربة' : 'Experience',
@@ -111,7 +102,7 @@ export default function SettingsOverlay({
                     : tRef.current('settings_haptics_off'),
                 action: async () => {
                     const next = await onToggleHapticsRef.current?.();
-                    const msg  = (next === true)
+                    const msg  = next === true
                         ? tRef.current('settings_haptics_on')
                         : tRef.current('settings_haptics_off');
                     speakRef.current(msg, 'high');
@@ -123,31 +114,38 @@ export default function SettingsOverlay({
         ];
     };
 
-    // Action items only — these are what activeIndex points into
     const getActionItems = () => getItems().filter(i => i.type === ITEM_TYPE_ACTION);
 
-    // Animate entrance + announce opening
-    const rowAnims = useRef(getItems().map(() => new Animated.Value(0))).current;
+    // One anim per item for sequential stagger
+    const allItems = getItems();
+    const rowAnims = useRef(allItems.map(() => new Animated.Value(0))).current;
 
     useEffect(() => {
+        // Backdrop + card entrance
         Animated.parallel([
-            Animated.timing(backdropOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
-            Animated.timing(panelOpacity,    { toValue: 1, duration: 260, useNativeDriver: true }),
-            Animated.timing(panelSlide,      { toValue: 0, duration: 300, useNativeDriver: true }),
-            ...rowAnims.map((a, i) =>
-                Animated.timing(a, { toValue: 1, duration: 220, delay: 60 + i * 50, useNativeDriver: true })
-            ),
+            Animated.timing(backdropOp, { toValue: 1, duration: 220, useNativeDriver: true }),
+            Animated.timing(cardOp,     { toValue: 1, duration: 260, useNativeDriver: true }),
+            Animated.timing(cardScale,  { toValue: 1, duration: 280,
+                easing: require('react-native').Easing?.out?.(require('react-native').Easing?.cubic) ?? undefined,
+                useNativeDriver: true }),
         ]).start();
+
+        // Stagger rows: 30ms base + 40ms per item
+        rowAnims.forEach((a, i) => {
+            Animated.timing(a, {
+                toValue: 1, duration: 180,
+                delay: 80 + i * 40,
+                useNativeDriver: true,
+            }).start();
+        });
+
         setTimeout(() => speakRef.current(tRef.current('settings_open'), 'high'), 300);
         setTimeout(() => {
             const actions = getActionItems();
             speakRef.current(tRef.current('settings_selected', actions[0].label), 'normal');
-        }, 1600);
+        }, 1500);
     }, []); // eslint-disable-line
 
-    // ── Navigate with wrap ────────────────────────────────────────────────────
-    // Moves through ACTION items only (skips headers in the count).
-    // Wraps: left from 0 → last action, right from last → 0.
     const navigateBy = (delta) => {
         const actions = getActionItems();
         const next    = (activeRef.current + delta + actions.length) % actions.length;
@@ -164,7 +162,7 @@ export default function SettingsOverlay({
     const longFired = useRef(false);
     const startPos  = useRef({ x: 0, y: 0 });
 
-    const panResponder = useRef(PanResponder.create({
+    const pan = useRef(PanResponder.create({
         onStartShouldSetPanResponder:        () => true,
         onStartShouldSetPanResponderCapture: () => true,
 
@@ -176,12 +174,9 @@ export default function SettingsOverlay({
                 tapCount.current  = 0;
                 clearTimeout(tapTimer.current);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                // Long press = re-announce current item
                 const actions = getActionItems();
                 speakRef.current(
-                    tRef.current('settings_selected', actions[activeRef.current].label),
-                    'high',
-                );
+                    tRef.current('settings_selected', actions[activeRef.current].label), 'high');
             }, 700);
         },
 
@@ -191,25 +186,19 @@ export default function SettingsOverlay({
 
             const dx  = e.nativeEvent.pageX - startPos.current.x;
             const dy  = e.nativeEvent.pageY - startPos.current.y;
+            const adx = Math.abs(dx), ady = Math.abs(dy);
 
-            // Swipe left/right → navigate with wrap
-            if (Math.abs(dx) >= 50 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-                tapCount.current = 0;
-                clearTimeout(tapTimer.current);
-                // RTL: swipe right = previous item, swipe left = next item
-                // LTR: swipe right = next item, swipe left = previous item
-                // But since items are ordered for LTR and we just navigate linearly,
-                // keep the same direction for both — user learns it once.
+            if (adx >= 50 && adx > ady * 1.2) {
+                tapCount.current = 0; clearTimeout(tapTimer.current);
                 navigateBy(dx > 0 ? 1 : -1);
                 return;
             }
 
-            if (Math.abs(dx) > 20 || Math.abs(dy) > 20) return;
+            if (adx > 20 || ady > 20) return;
 
             tapCount.current += 1;
 
-            // Triple tap → close
-            if (tapCount.current >= 3) {
+            if (tapCount.current === 3) {
                 tapCount.current = 0;
                 clearTimeout(tapTimer.current);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -217,114 +206,111 @@ export default function SettingsOverlay({
                 return;
             }
 
+            if (tapCount.current > 3) {
+                tapCount.current = 0;
+                clearTimeout(tapTimer.current);
+                return;
+            }
+
             clearTimeout(tapTimer.current);
             tapTimer.current = setTimeout(() => {
-                const count = tapCount.current;
-                tapCount.current = 0;
+                const count = tapCount.current; tapCount.current = 0;
                 const actions = getActionItems();
                 if (count === 2) {
-                    // Double tap → execute
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
                     actions[activeRef.current]?.action?.();
                 } else if (count === 1) {
-                    // Single tap → re-announce
                     speakRef.current(
-                        tRef.current('settings_selected', actions[activeRef.current].label),
-                        'high',
-                    );
+                        tRef.current('settings_selected', actions[activeRef.current].label), 'high');
                 }
-            }, 320);
+            }, 380);
         },
 
         onPanResponderTerminate: () => {
             clearTimeout(longTimer.current);
             clearTimeout(tapTimer.current);
+            longFired.current = false;
+            tapCount.current  = 0;
         },
     })).current;
 
     // ── Render ────────────────────────────────────────────────────────────────
     const items   = getItems();
-    const actions = getActionItems();
     const isRTL   = lang === 'ar';
-
-    // Map action index back to overall list index for the active marker
     let actionCounter = -1;
 
     return (
-        <Animated.View style={[s.root, { opacity: backdropOpacity }]} {...panResponder.panHandlers}>
-            <View style={s.backdrop} />
+        <Animated.View style={[s.root, { opacity: backdropOp }]} {...pan.panHandlers}>
 
+            {/* Blurred backdrop */}
+            <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
+            <View style={s.scrim} />
+
+            {/* Centered card */}
             <Animated.View style={[
-                s.sheet,
-                { opacity: panelOpacity, transform: [{ translateY: panelSlide }] },
+                s.card,
+                { opacity: cardOp, transform: [{ scale: cardScale }] },
             ]}>
-                <View style={s.handle} />
+                {/* Header */}
+                <View style={s.cardHeader}>
+                    <Text style={[s.cardTitle, isRTL && s.rtl]}>
+                        {isRTL ? 'الإعدادات' : 'Settings'}
+                    </Text>
+                    <View style={s.titleLine} />
+                </View>
 
-                <Text style={[s.title, isRTL && s.titleRTL]}>
-                    {isRTL ? 'الإعدادات' : 'Settings'}
-                </Text>
-
-                <View style={s.divider} />
-
+                {/* Items */}
                 {items.map((item, i) => {
                     if (item.type === ITEM_TYPE_HEADER) {
-                        // Section header row — visual only, not interactive
                         return (
-                            <Animated.View key={`h-${i}`} style={[s.headerRow, { opacity: rowAnims[i] }]}>
-                                <Text style={[s.headerText, isRTL && { textAlign: 'right' }]}>
+                            <Animated.View key={`h-${i}`} style={[s.sectionHeader, { opacity: rowAnims[i] }]}>
+                                <Text style={[s.sectionText, isRTL && s.rtl]}>
                                     {item.label.toUpperCase()}
                                 </Text>
                             </Animated.View>
                         );
                     }
 
-                    // Action item
                     actionCounter += 1;
-                    const myActionIdx = actionCounter;
-                    const active      = myActionIdx === activeIndex;
-                    const color       = item.color ?? CYAN;
+                    const myIdx  = actionCounter;
+                    const active = myIdx === activeIndex;
+                    const color  = item.color ?? CYAN;
 
                     return (
                         <Animated.View key={`a-${i}`} style={[
                             s.row,
-                            i < items.length - 1 && s.rowBorder,
-                            { opacity: rowAnims[i], flexDirection: isRTL ? 'row-reverse' : 'row' },
+                            i < items.length - 1 && s.rowLine,
+                            { opacity: rowAnims[i] },
+                            isRTL && s.rowRTL,
                         ]}>
+                            {/* Active indicator bar */}
                             <View style={[
                                 s.rowBar,
-                                {
-                                    backgroundColor: active ? color : 'transparent',
-                                    marginRight: isRTL ? 0  : 16,
-                                    marginLeft:  isRTL ? 16 : 0,
-                                },
+                                { backgroundColor: active ? color : 'transparent' },
+                                isRTL ? s.rowBarRTL : s.rowBarLTR,
                             ]} />
+
                             <Text style={[
                                 s.rowLabel,
-                                {
-                                    color:            active ? color : ON_SURFACE,
-                                    textAlign:        isRTL ? 'right' : 'left',
-                                    writingDirection: isRTL ? 'rtl'   : 'ltr',
-                                },
+                                { color: active ? color : TEXT_MID },
+                                isRTL && s.rtl,
                             ]}>
                                 {item.label}
                             </Text>
-                            {active && <View style={[s.rowDot, { backgroundColor: color }]} />}
+
+                            {/* Active dot */}
+                            {active && (
+                                <View style={[s.activeDot, { backgroundColor: color }]} />
+                            )}
                         </Animated.View>
                     );
                 })}
 
-                {/* Footer */}
-                <View style={[s.footer, isRTL && { flexDirection: 'row-reverse' }]}>
-                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
-                        {isRTL ? 'مرر للتنقل' : 'swipe to navigate'}
-                    </Text>
-                    <View style={s.footerSep} />
-                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
-                        {isRTL ? 'انقر مرتين للاختيار' : 'double tap to select'}
-                    </Text>
-                    <View style={s.footerSep} />
-                    <Text style={[s.footerText, isRTL && s.footerTextRTL]}>
-                        {isRTL ? 'انقر ثلاثاً للإغلاق' : 'triple tap to close'}
+                {/* Footer hints */}
+                <View style={[s.footer, isRTL && s.rowRTL]}>
+                    <Text style={[s.footerText, isRTL && s.rtl]}>
+                        {isRTL ? 'مرر · انقر مرتين · ثلاث مرات للإغلاق'
+                               : 'swipe · double tap · triple tap to close'}
                     </Text>
                 </View>
             </Animated.View>
@@ -333,31 +319,90 @@ export default function SettingsOverlay({
 }
 
 const s = StyleSheet.create({
-    root:     { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', zIndex: 100 },
-    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.72)' },
-    sheet: {
-        backgroundColor: SURFACE,
-        borderTopLeftRadius: 20, borderTopRightRadius: 20,
-        paddingBottom: 44, overflow: 'hidden',
+    root: {
+        ...StyleSheet.absoluteFillObject,
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 100,
     },
-    handle:   { width: 36, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.12)', alignSelf: 'center', marginTop: 12, marginBottom: 4 },
-    title:    { color: ON_SURFACE_LOW, fontSize: 11, letterSpacing: 4, fontWeight: '600', textAlign: 'center', paddingVertical: 16 },
-    titleRTL: { letterSpacing: 1, fontSize: 13 },
-    divider:  { height: 1, backgroundColor: LINE },
+    scrim: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(4,5,8,0.55)',
+    },
 
-    // Section header row
-    headerRow:  { paddingTop: 18, paddingBottom: 6, paddingHorizontal: 24 },
-    headerText: { color: ON_SURFACE_MED, fontSize: 9, letterSpacing: 3, fontWeight: '700' },
+    // Centered frosted card
+    card: {
+        width: W - 48,
+        backgroundColor: CARD_BG,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: CARD_BORDER,
+        overflow: 'hidden',
+    },
+
+    // Card header
+    cardHeader: {
+        paddingTop: 24,
+        paddingHorizontal: 24,
+        paddingBottom: 0,
+        gap: 12,
+    },
+    cardTitle: {
+        color: TEXT_HI,
+        fontSize: 13,
+        fontWeight: '600',
+        letterSpacing: 3,
+        textAlign: 'center',
+    },
+    titleLine: {
+        height: 1,
+        backgroundColor: CARD_BORDER,
+        marginTop: 12,
+    },
+
+    // Section header
+    sectionHeader: {
+        paddingTop: 16,
+        paddingBottom: 4,
+        paddingHorizontal: 24,
+    },
+    sectionText: {
+        color: TEXT_LO,
+        fontSize: 8,
+        letterSpacing: 3,
+        fontWeight: '700',
+    },
 
     // Action row
-    row:        { flexDirection: 'row', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24 },
-    rowBorder:  { borderBottomWidth: 1, borderBottomColor: LINE },
-    rowBar:     { width: 2, height: 18, borderRadius: 1 },
-    rowLabel:   { flex: 1, color: ON_SURFACE, fontSize: 16, fontWeight: '500' },
-    rowDot:     { width: 5, height: 5, borderRadius: 2.5 },
+    row: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 16,
+        paddingHorizontal: 0,
+        paddingRight: 20,
+    },
+    rowRTL:    { flexDirection: 'row-reverse', paddingRight: 0, paddingLeft: 20 },
+    rowLine:   { borderBottomWidth: 1, borderBottomColor: ROW_LINE },
+    rowBar:    { width: 2, height: 16, borderRadius: 1 },
+    rowBarLTR: { marginLeft: 20, marginRight: 14 },
+    rowBarRTL: { marginRight: 20, marginLeft: 14 },
+    rowLabel:  { flex: 1, fontSize: 15, fontWeight: '500', letterSpacing: 0.1 },
+    activeDot: { width: 4, height: 4, borderRadius: 2 },
 
-    footer:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingTop: 16, paddingHorizontal: 24 },
-    footerSep:    { width: 3, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.1)' },
-    footerText:   { color: 'rgba(255,255,255,0.15)', fontSize: 10, letterSpacing: 1 },
-    footerTextRTL:{ letterSpacing: 0, fontSize: 11 },
+    // Footer
+    footer: {
+        paddingHorizontal: 24,
+        paddingTop: 14,
+        paddingBottom: 20,
+        alignItems: 'center',
+    },
+    footerText: {
+        color: TEXT_LO,
+        fontSize: 9,
+        letterSpacing: 1.5,
+        fontWeight: '500',
+        textAlign: 'center',
+    },
+
+    rtl: { textAlign: 'right', writingDirection: 'rtl' },
 });

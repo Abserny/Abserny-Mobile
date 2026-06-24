@@ -13,22 +13,27 @@
  *   NEUTRAL  — single Heavy tap (existing behaviour, unchanged)
  *              "A chair to your left."
  *
- *   NOTABLE  — Heavy tap + one short 80ms buzz after a 100ms gap
+ *   NOTABLE  — Heavy tap + one Medium buzz after a 100ms gap
  *              "A person ahead." — worth attention, not urgent
  *
- *   DANGER   — Heavy tap + rapid triple buzz [80·60·80·60·80ms]
+ *   DANGER   — Heavy tap + triple Heavy buzz [t+100, t+200, t+300ms]
  *              "Car approaching." — act now
  *
  * SEQUENCE: thud → pattern → 80ms silence → voice begins
  * The Heavy tap stays as "result incoming" (user's existing mental model).
  * The pattern is additional information in the gap before first spoken word.
  *
+ * iOS NOTE:
+ * Vibration.vibrate() with a pattern array is silently ignored on iOS —
+ * only the first element (a wait, not a buzz) is honoured, so the danger
+ * pattern produced zero feedback on iOS. All tiers now use impactAsync()
+ * exclusively, which works identically on Android and iOS.
+ *
  * THIS IS OPTIONAL: the caller checks a user preference before calling this.
  * When disabled, caller falls back to the plain Heavy tap as before.
  */
 
-import * as Haptics   from 'expo-haptics';
-import { Vibration }  from 'react-native';
+import * as Haptics from 'expo-haptics';
 
 // ── Classification keywords ───────────────────────────────────────────────────
 // Run both EN and AR regardless of current language — Gemini sometimes code-switches.
@@ -57,8 +62,11 @@ export function classifyResult(text) {
  * when the pattern is complete, so the caller can then start speech.
  *
  * neutral:  resolves immediately (caller plays its own Heavy tap separately)
- * notable:  100ms gap → 80ms buzz → resolves
- * danger:   100ms gap → triple buzz [80·60·80·60·80ms] → resolves
+ * notable:  100ms gap → 1× Medium impact → resolves (~120ms total)
+ * danger:   100ms gap → 3× Heavy impacts at 100ms intervals → resolves (~400ms total)
+ *
+ * All impacts use expo-haptics (impactAsync) — no Vibration API anywhere.
+ * This ensures consistent behaviour on both Android and iOS.
  */
 export function playPriorityHaptic(priority) {
     return new Promise((resolve) => {
@@ -72,18 +80,23 @@ export function playPriorityHaptic(priority) {
             // Short gap then one firm buzz
             setTimeout(() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setTimeout(resolve, 120); // wait for buzz to finish
+                setTimeout(resolve, 120);
             }, 100);
             return;
         }
 
         if (priority === 'danger') {
-            // Short gap then rapid triple buzz using Vibration for pattern control
+            // Three sharp Heavy impacts, 100ms apart
+            // Feels like: THUD — pause — THUD·THUD·THUD — voice
             setTimeout(() => {
-                // [wait, buzz, gap, buzz, gap, buzz]
-                Vibration.vibrate([0, 80, 60, 80, 60, 80]);
-                // Total pattern duration: 80+60+80+60+80 = 360ms
-                setTimeout(resolve, 380);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                setTimeout(() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                    setTimeout(() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                        setTimeout(resolve, 80); // brief silence before voice
+                    }, 100);
+                }, 100);
             }, 100);
             return;
         }

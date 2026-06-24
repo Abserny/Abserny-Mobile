@@ -2,12 +2,16 @@
  * src/App.js
  * Root router — decides which screen to show.
  *
+ * BOOT FLOW:
+ *   1. App mounts → showBoot = true → <BootScreen> plays (~2.8s)
+ *   2. BootScreen calls onDone() → showBoot = false
+ *   3. Normal routing resumes (onboarding or main screen)
+ *
+ *   BootScreen is only shown on cold start (component mount).
+ *   Navigating between onboarding ↔ main does NOT re-show it.
+ *
  * isRepeatTour: set to true when the user triggers "Repeat tutorial" from
- * Settings. This flag is passed to OnboardingScreen so it can:
- *   - Announce the skip option at the start
- *   - Show "double tap to skip" hint on non-waiting steps
- * It resets to false after onboarding completes so a subsequent repeat
- * from Settings always starts fresh.
+ * Settings. Resets to false after onboarding completes.
  */
 
 import React, { useState } from 'react';
@@ -15,6 +19,7 @@ import { View } from 'react-native';
 import { useLanguage }    from './hooks/useLanguage';
 import OnboardingScreen   from './screens/OnboardingScreen';
 import MainScreen         from './screens/MainScreen';
+import BootScreen         from './screens/BootScreen';
 import { BG }             from './constants/colors';
 
 export default function App() {
@@ -23,7 +28,7 @@ export default function App() {
         chooseLang, completeOnboarding, resetOnboarding, t,
     } = useLanguage();
 
-    // True only when repeat was triggered from Settings — not on first-time run
+    const [showBoot,     setShowBoot]     = useState(true);
     const [isRepeatTour, setIsRepeatTour] = useState(false);
 
     const handleResetOnboarding = async () => {
@@ -31,10 +36,17 @@ export default function App() {
         await resetOnboarding();
     };
 
-    // Blank screen while AsyncStorage loads (usually < 30ms)
+    // ── Boot animation plays first, always ───────────────────────────────────
+    // It runs in parallel with AsyncStorage loading (useLanguage).
+    // By the time it finishes (~2.8s), `loaded` is almost certainly true.
+    if (showBoot) {
+        return <BootScreen onDone={() => setShowBoot(false)} />;
+    }
+
+    // ── Blank screen while AsyncStorage loads (usually < 30ms) ──────────────
     if (!loaded) return <View style={{ flex: 1, backgroundColor: BG }} />;
 
-    // Show onboarding if language not chosen or tutorial not completed
+    // ── Onboarding ───────────────────────────────────────────────────────────
     if (!lang || !onboarded) {
         return (
             <OnboardingScreen
@@ -42,15 +54,15 @@ export default function App() {
                 initialLang={lang || 'en'}
                 isRepeat={isRepeatTour}
                 onComplete={async (chosenLang) => {
-                    setIsRepeatTour(false);   // reset for next time
+                    setIsRepeatTour(false);
                     await chooseLang(chosenLang);
                     await completeOnboarding();
-                    // No I18nManager or reload — RTL is per-component.
                 }}
             />
         );
     }
 
+    // ── Main app ─────────────────────────────────────────────────────────────
     return (
         <MainScreen
             lang={lang}

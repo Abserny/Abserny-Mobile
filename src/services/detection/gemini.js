@@ -5,6 +5,7 @@
  */
 
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GEMINI_PROMPTS, WATCH_PROMPTS, buildWatchPrompt } from '../../i18n/prompts';
 
 // ── Key pool ──────────────────────────────────────────────────────────────────
@@ -29,10 +30,24 @@ function getPacificDate() {
 const keyState = { idx: 0, exhausted: new Map() };
 if (__DEV__) { keyState.exhausted.clear(); }
 
+export async function initGeminiKeys() {
+    try {
+        const stored = await AsyncStorage.getItem('@abserny_exhausted_keys');
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            const today  = getPacificDate();
+            for (const [k, date] of Object.entries(parsed)) {
+                if (date === today) keyState.exhausted.set(k, date);
+            }
+        }
+    } catch (_) {}
+}
+
 function isExhausted(k)   { return keyState.exhausted.get(k) === getPacificDate(); }
 function markExhausted(k) {
     keyState.exhausted.set(k, getPacificDate());
     console.warn(`[Abserny] Key ...${k.slice(-6)} RPD exhausted`);
+    AsyncStorage.setItem('@abserny_exhausted_keys', JSON.stringify(Object.fromEntries(keyState.exhausted))).catch(()=>{});
 }
 function rotateKey() { keyState.idx = (keyState.idx + 1) % Math.max(1, RAW_KEYS.length); }
 

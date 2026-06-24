@@ -24,7 +24,7 @@
       "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/iconLogo.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#161717"
       },
       "permissions": [
         "CAMERA",

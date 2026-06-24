@@ -11,5 +11,5 @@ export const SCREEN_W = W;
 export const SCREEN_H = H;
 
 // Bracket corner size + border width (camera viewfinder corners)
-export const BRACKET_SIZE   = 20;
-export const BRACKET_WIDTH  = 2;
+export const BRACKET_SIZE   = 28;
+export const BRACKET_WIDTH  = 1.5;

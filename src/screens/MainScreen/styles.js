@@ -1,13 +1,17 @@
 /**
- * screens/MainScreen/styles.js
- * All styles for the main camera screen.
- * Edit layout and visual tokens here — zero logic in this file.
+ * screens/MainScreen/styles.js  — "Flat Minimal" revision
+ *
+ * Philosophy:
+ *   - No shadows, no glows, no elevation tricks
+ *   - Every element earns its place with space, not decoration
+ *   - Type does the heavy lifting: weight + tracking
+ *   - One accent color at a time, everything else is near-invisible
  */
 
 import { StyleSheet } from 'react-native';
 import {
     BG, SURFACE_HI, CYAN,
-    ON_SURFACE, ON_SURFACE_MED, ON_SURFACE_LOW,
+    ON_SURFACE, ON_SURFACE_MED, ON_SURFACE_LOW, ON_SURFACE_DIM,
 } from '../../constants/colors';
 import { BRACKET_SIZE, BRACKET_WIDTH } from '../../constants/layout';
 
@@ -17,75 +21,185 @@ export const s = StyleSheet.create({
 
     overlay: { ...StyleSheet.absoluteFillObject },
 
+    // Vignettes — lighter, let the camera breathe
     vignetteBottom: {
-        position: 'absolute', bottom: 0, left: 0, right: 0, height: 280,
-        backgroundColor: 'rgba(15,17,18,0.92)',
+        position: 'absolute', bottom: 0, left: 0, right: 0, height: 220,
+        backgroundColor: 'rgba(10,12,14,0.72)',
+    },
+    vignetteTop: {
+        position: 'absolute', top: 0, left: 0, right: 0, height: 90,
+        backgroundColor: 'rgba(10,12,14,0.40)',
     },
 
-    // Corner brackets
-    bracketTL: { position: 'absolute', top: 20,    left: 20,    width: BRACKET_SIZE, height: BRACKET_SIZE, borderTopWidth: BRACKET_WIDTH,    borderLeftWidth: BRACKET_WIDTH,   borderTopLeftRadius: 4     },
-    bracketTR: { position: 'absolute', top: 20,    right: 20,   width: BRACKET_SIZE, height: BRACKET_SIZE, borderTopWidth: BRACKET_WIDTH,    borderRightWidth: BRACKET_WIDTH,  borderTopRightRadius: 4    },
-    bracketBL: { position: 'absolute', bottom: 20, left: 20,    width: BRACKET_SIZE, height: BRACKET_SIZE, borderBottomWidth: BRACKET_WIDTH, borderLeftWidth: BRACKET_WIDTH,   borderBottomLeftRadius: 4  },
-    bracketBR: { position: 'absolute', bottom: 20, right: 20,   width: BRACKET_SIZE, height: BRACKET_SIZE, borderBottomWidth: BRACKET_WIDTH, borderRightWidth: BRACKET_WIDTH,  borderBottomRightRadius: 4 },
+    // Corner brackets — hairline, no shadow, pure geometry
+    // Top brackets pushed below TopBar + ModeBanner safe area (~130px)
+    bracketTL: {
+        position: 'absolute', top: 130, left: 24,
+        width: BRACKET_SIZE, height: BRACKET_SIZE,
+        borderTopWidth: BRACKET_WIDTH, borderLeftWidth: BRACKET_WIDTH,
+        borderTopLeftRadius: 3,
+    },
+    bracketTR: {
+        position: 'absolute', top: 130, right: 24,
+        width: BRACKET_SIZE, height: BRACKET_SIZE,
+        borderTopWidth: BRACKET_WIDTH, borderRightWidth: BRACKET_WIDTH,
+        borderTopRightRadius: 3,
+    },
+    bracketBL: {
+        position: 'absolute', bottom: 220, left: 24,
+        width: BRACKET_SIZE, height: BRACKET_SIZE,
+        borderBottomWidth: BRACKET_WIDTH, borderLeftWidth: BRACKET_WIDTH,
+        borderBottomLeftRadius: 3,
+    },
+    bracketBR: {
+        position: 'absolute', bottom: 220, right: 24,
+        width: BRACKET_SIZE, height: BRACKET_SIZE,
+        borderBottomWidth: BRACKET_WIDTH, borderRightWidth: BRACKET_WIDTH,
+        borderBottomRightRadius: 3,
+    },
 
+    // Scan line — thin, just a light stroke
     scanLine: {
-        position: 'absolute', top: 0, left: 24, right: 24, height: 1.5,
-        shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.9,
-        shadowRadius: 6, elevation: 6,
+        position: 'absolute', top: 0, left: 32, right: 32, height: 1,
     },
 
-    // ── Top bar
-    topBar:     { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 52, paddingHorizontal: 22, paddingBottom: 12 },
+    // ── Top bar ───────────────────────────────────────────────────────────────
+    topBar: {
+        position: 'absolute', top: 0, left: 0, right: 0,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingTop: 54, paddingHorizontal: 24, paddingBottom: 12,
+    },
     rowReverse: { flexDirection: 'row-reverse' },
-    logo:       { width: 96, height: 30, resizeMode: 'contain' },
-    topRight:   { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    connPill:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
-    connDot:    { width: 6, height: 6, borderRadius: 3 },
-    countPill:  { backgroundColor: SURFACE_HI, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
-    scanCount:  { color: ON_SURFACE_MED, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+    logo:       { width: 90, height: 28, resizeMode: 'contain' },
+    topRight:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
 
-    // ── Mode banner
-    modeBanner:      { position: 'absolute', top: 110, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 24 },
-    activeModeChip:  { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
-    activeModeText:  { fontSize: 10, fontWeight: '800', letterSpacing: 3 },
-    modeDots:        { flexDirection: 'row', gap: 5, alignItems: 'center' },
-    modeDot:         { width: 4, height: 4, borderRadius: 2, backgroundColor: ON_SURFACE_LOW },
+    // Connection status — just a dot, no pill background
+    connDotWrap: { width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
+    connDot:     { width: 5, height: 5, borderRadius: 2.5 },
 
-    // ── Center
-    center:     { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-    watchRing:  { position: 'absolute', width: 120, height: 120, borderRadius: 60, borderWidth: 1 },
-    readyOuter: { alignItems: 'center', justifyContent: 'center' },
-    readyRing:  { width: 68, height: 68, borderRadius: 34, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
-    readyDot:   { width: 7, height: 7, borderRadius: 3.5 },
-    scanningBox:{ alignItems: 'center', gap: 14 },
-    scanLabel:  { fontSize: 9, fontWeight: '800' },
-    waveRow:    { flexDirection: 'row', gap: 5, alignItems: 'center', height: 36 },
-    errorRing:  { width: 54, height: 54, borderRadius: 27, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,68,85,0.08)' },
-    errorLine1: { position: 'absolute', width: 20, height: 2, borderRadius: 1, transform: [{ rotate: '45deg' }]  },
-    errorLine2: { position: 'absolute', width: 20, height: 2, borderRadius: 1, transform: [{ rotate: '-45deg' }] },
-    stateBadge: { position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 6, borderWidth: 1 },
-    stateDot:   { width: 5, height: 5, borderRadius: 2.5 },
-    stateBadgeText: { fontSize: 9, letterSpacing: 3, fontWeight: '800' },
+    countPill: {
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        paddingHorizontal: 8, paddingVertical: 3,
+        borderRadius: 6,
+    },
+    scanCount: { color: ON_SURFACE_LOW, fontSize: 10, fontWeight: '600', letterSpacing: 1.5 },
 
-    // ── Bottom
-    bottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center', paddingBottom: 40, paddingHorizontal: 28, gap: 10 },
-    sourceBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
-    sourceDot:   { width: 4, height: 4, borderRadius: 2 },
-    sourceTxt:   { fontSize: 8, letterSpacing: 3, fontWeight: '700' },
-    resultText:  { color: ON_SURFACE, fontSize: 17, lineHeight: 28, textAlign: 'center', letterSpacing: 0.2 },
-    rtlText:     { textAlign: 'right' },
-    hintRow:     { flexDirection: 'row', alignItems: 'center' },
-    hintText:    { color: ON_SURFACE_LOW, fontSize: 9, letterSpacing: 2, fontWeight: '600' },
-    gestureRow:  { flexDirection: 'row', gap: 16, marginTop: 4 },
-    gestureLabel:{ color: ON_SURFACE_LOW, fontSize: 8, letterSpacing: 1.5 },
+    // ── Mode banner ───────────────────────────────────────────────────────────
+    // Pushed down to clear the TopBar (paddingTop:54 + logo:28 + paddingBottom:12 ≈ 94px)
+    modeBanner: {
+        position: 'absolute', top: 100, left: 0, right: 0,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        gap: 12, paddingHorizontal: 24,
+    },
 
-    // ── Permission screen
-    permIconBox:    { width: 72, height: 72, alignItems: 'center', justifyContent: 'center', marginBottom: 24 },
-    permCameraBody: { width: 54, height: 40, borderRadius: 8, borderWidth: 2.5, borderColor: CYAN, alignItems: 'center', justifyContent: 'center' },
-    permCameraLens: { width: 16, height: 16, borderRadius: 8, borderWidth: 2.5, borderColor: CYAN },
-    permCameraBump: { position: 'absolute', top: 10, width: 16, height: 8, borderRadius: 4, backgroundColor: CYAN },
-    permTitle:      { color: ON_SURFACE, fontSize: 22, fontWeight: '700', marginBottom: 12, textAlign: 'center', letterSpacing: -0.3 },
-    permBody:       { color: ON_SURFACE_MED, fontSize: 15, textAlign: 'center', lineHeight: 24, marginBottom: 36 },
-    permBtn:        { paddingHorizontal: 36, paddingVertical: 16, borderRadius: 14, minWidth: 180, alignItems: 'center' },
-    permBtnText:    { color: '#000', fontSize: 15, fontWeight: '800', letterSpacing: 1 },
+    // Chip: flat, just border + text, no background fill
+    activeModeChip: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        paddingHorizontal: 12, paddingVertical: 6,
+        borderRadius: 4, borderWidth: 0.5,
+    },
+    activeModeText: { fontSize: 9, fontWeight: '700', letterSpacing: 3.5 },
+
+    // Dots: tiny, no spring morphing
+    modeDots: { flexDirection: 'row', gap: 4, alignItems: 'center' },
+    modeDot:  { width: 3, height: 3, borderRadius: 1.5 },
+
+    // ── Center ────────────────────────────────────────────────────────────────
+    center:    { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+
+    // Single dot — the entire idle/ready state
+    readyDot: {
+        width: 8, height: 8, borderRadius: 4,
+    },
+
+    // Scanning: thin ring only, no rotating arcs
+    scanRing: {
+        width: 56, height: 56, borderRadius: 28,
+        borderWidth: 1,
+        alignItems: 'center', justifyContent: 'center',
+    },
+    scanLabel: {
+        marginTop: 18,
+        fontSize: 8, fontWeight: '700', letterSpacing: 5,
+    },
+
+    // Speaking: just three static bars that fade-pulse
+    waveRow:  { flexDirection: 'row', gap: 5, alignItems: 'center', height: 28 },
+
+    // Error: plain X, no ring
+    errorMark: { alignItems: 'center', justifyContent: 'center', width: 32, height: 32 },
+    errorLine1:{ position: 'absolute', width: 18, height: 1.5, borderRadius: 1, transform: [{ rotate: '45deg'  }] },
+    errorLine2:{ position: 'absolute', width: 18, height: 1.5, borderRadius: 1, transform: [{ rotate: '-45deg' }] },
+
+    // State badge — watching / auto
+    // Not absolute — lives in the indicatorColumn flow above the state icon
+    stateBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        paddingHorizontal: 10, paddingVertical: 4,
+        borderRadius: 4, borderWidth: 0.5,
+    },
+    stateDot:       { width: 4, height: 4, borderRadius: 2 },
+    stateBadgeText: { fontSize: 8, letterSpacing: 3.5, fontWeight: '700' },
+
+    // Column that stacks badge (optional) above the state indicator
+    indicatorColumn: {
+        alignItems: 'center',
+        gap: 16,
+    },
+
+    // Watch ring: very faint, no heavy border
+    watchRing: {
+        position: 'absolute', width: 100, height: 100, borderRadius: 50,
+        borderWidth: 0.5,
+    },
+
+    // ── Bottom ────────────────────────────────────────────────────────────────
+    bottom: {
+        position: 'absolute', bottom: 0, left: 0, right: 0,
+        alignItems: 'center', paddingBottom: 48, paddingHorizontal: 32, gap: 14,
+    },
+
+    // Source badge — offline/mlkit indicator
+    sourceBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 5,
+        paddingHorizontal: 8, paddingVertical: 3,
+        borderRadius: 3,
+        backgroundColor: 'rgba(255,255,255,0.04)',
+    },
+    sourceDot: { width: 3, height: 3, borderRadius: 1.5 },
+    sourceTxt: { fontSize: 7, letterSpacing: 3, fontWeight: '700' },
+
+    // Result text — slightly larger, comfortable reading
+    resultText: {
+        color: ON_SURFACE, fontSize: 18, lineHeight: 30,
+        textAlign: 'center', fontWeight: '300', letterSpacing: 0.1,
+    },
+    rtlText:  { textAlign: 'right', writingDirection: 'rtl' },
+
+    // Hint line
+    hintRow:  { flexDirection: 'row', alignItems: 'center' },
+    hintText: { color: ON_SURFACE_LOW, fontSize: 9, letterSpacing: 2, fontWeight: '500' },
+
+    // ── Permission screen ─────────────────────────────────────────────────────
+    permIconBox:    { width: 64, height: 64, alignItems: 'center', justifyContent: 'center', marginBottom: 28 },
+    permCameraBody: { width: 48, height: 36, borderRadius: 7, borderWidth: 2, borderColor: CYAN, alignItems: 'center', justifyContent: 'center' },
+    permCameraLens: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: CYAN },
+    permCameraBump: { position: 'absolute', top: 8, width: 14, height: 7, borderRadius: 3.5, backgroundColor: CYAN },
+    permTitle:      { color: ON_SURFACE, fontSize: 22, fontWeight: '600', marginBottom: 12, textAlign: 'center', letterSpacing: -0.3 },
+    permBody:       { color: ON_SURFACE_MED, fontSize: 15, textAlign: 'center', lineHeight: 26, marginBottom: 40 },
+    permBtn:        { paddingHorizontal: 36, paddingVertical: 15, borderRadius: 8, minWidth: 180, alignItems: 'center' },
+    permBtnText:    { color: '#000', fontSize: 14, fontWeight: '700', letterSpacing: 1 },
+
+    // ── Model loading pill ────────────────────────────────────────────────────
+    // bottom: 200 keeps it clear of the BottomPanel result + hint row
+    modelPill: {
+        position: 'absolute',
+        bottom: 200, alignSelf: 'center',
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        paddingHorizontal: 12, paddingVertical: 5,
+        borderRadius: 4,
+        backgroundColor: 'rgba(255,255,255,0.04)',
+    },
+    modelDot: { width: 5, height: 5, borderRadius: 2.5 },
+    modelTxt: { color: ON_SURFACE_LOW, fontSize: 10, letterSpacing: 1, fontWeight: '500' },
 });

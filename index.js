@@ -1,3 +1,5 @@
+import * as SplashScreen from 'expo-splash-screen';
+SplashScreen.preventAutoHideAsync();
 import { registerRootComponent } from 'expo';
 import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,15 +19,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 })();
 
 // ── TFLite model prewarm ──────────────────────────────────────────────────────
-// ensureModel() is a singleton — calling it here and in the detection service
-// shares the same Promise. Model loads exactly once.
-setTimeout(() => {
-    try {
-        const { loadTensorflowModel } = require('react-native-fast-tflite');
-        // Updated path: assets/models/ after scaffold
-        loadTensorflowModel(require('./assets/models/efficientdet_lite2.tflite')).catch(() => {});
-    } catch (_) {}
-}, 0);
+// Handled by services/detection/index.js at import time (singleton).
+// No need to call ensureModel() here — it fires once when detection is imported.
 
 const App = require('./src/App').default;
 registerRootComponent(App);

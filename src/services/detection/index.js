@@ -4,13 +4,14 @@
  * This is the only file hooks/useDetection.js needs to import from.
  */
 
-import { detectWithGemini, getActiveKey, hasKeys } from './gemini';
+import { detectWithGemini, getActiveKey, hasKeys, initGeminiKeys } from './gemini';
 import { detectWithTFLite, ensureModel }           from './tflite';
 import { detectWithText }                          from './mlkit';
 import { normalizeArabicForTTS }                   from '../tts/normalize';
 
-// Pre-warm the TFLite model at import time (singleton, loads once)
+// Pre-warm the TFLite model and load exhausted keys at import time
 ensureModel().catch(() => {});
+initGeminiKeys().catch(() => {});
 
 export { hasKeys, getActiveKey };
 

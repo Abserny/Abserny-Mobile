@@ -2,10 +2,20 @@
  * hooks/useVoice.js
  * Language-aware speech queue. Never overlaps utterances.
  * Priority 'high' cancels current speech and speaks immediately.
+ *
+ * QUEUE CAP:
+ * Normal-priority items are capped at MAX_QUEUE_LENGTH. Without a cap, a
+ * burst of watch-mode results (hazard clears quickly, scene changes fast)
+ * can pile up 6-8 items — the user hears descriptions from 30 seconds ago
+ * while the world has already moved on. When the cap is reached, the oldest
+ * queued item is dropped to make room for the newest, keeping audio current.
+ * High-priority items bypass the cap entirely (they clear the queue anyway).
  */
 
 import { useRef, useCallback } from 'react';
 import * as Speech from 'expo-speech';
+
+const MAX_QUEUE_LENGTH = 3;
 
 export function useVoice(lang = 'en') {
     const queue    = useRef([]);
@@ -36,11 +46,16 @@ export function useVoice(lang = 'en') {
     const speak = useCallback((text, priority = 'normal') => {
         if (!text) return;
         if (priority === 'high') {
+            // High priority: cancel everything, speak immediately
             genRef.current += 1;
             Speech.stop();
             speaking.current = false;
             queue.current    = [text];
         } else {
+            // Normal priority: drop oldest item if queue is full
+            if (queue.current.length >= MAX_QUEUE_LENGTH) {
+                queue.current.shift();
+            }
             queue.current.push(text);
         }
         processQueue();

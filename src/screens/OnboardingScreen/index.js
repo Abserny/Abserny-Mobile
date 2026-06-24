@@ -1,311 +1,271 @@
 /**
  * screens/OnboardingScreen/index.js
  *
- * GESTURE MAP (tutorial phase):
- *   single tap    → replay current step audio (if not auto-advancing)
- *   long press    → same as single tap (accessible alternative)
- *   swipe left/right → practice swipe gesture
- *   swipe up      → practice watch mode gesture
- *   swipe down    → skip to finish (repeat runs ONLY)
- *   double tap    → practice double tap gesture / confirm language
- *   triple tap    → practice triple tap gesture
+ * Voice: all fixed strings now play via playVoice() from services/audio/voiceover.
+ * The STEPS array still holds the text strings — used as TTS fallback if a
+ * recording is missing, and as the displayed instruction text on screen.
  *
- * FIRST-TIME FLOW:
- *   welcome → app_intro → intro → [gesture steps] → offline_note → finish
- *
- *   welcome:   "Welcome to Abserny. I'll guide you through everything.
- *               Just listen for now. Tap once anytime to repeat what I said."
- *   app_intro: what the app does
- *   intro:     "Six gestures. Each controls a feature. Let's begin."
- *   [steps]:   each gesture taught in sequence
- *
- * REPEAT FLOW (isRepeat=true):
- *   repeat_intro → [gesture steps from double_tap] → offline_note → finish
- *
- *   repeat_intro: "Tutorial. Tap once to repeat a step. Swipe down to skip."
- *                 Auto-advances after TTS — straight into the gesture steps.
- *                 No welcome, no app description — user already knows.
- *
- * FIXES:
- *   1. Skip uses SWIPE DOWN — not double tap — so it can never conflict
- *      with the double_tap gesture practice step.
- *   2. isAutoAdvancingRef prevents single-tap replay racing with TTS onDone
- *      on auto-advancing (waitFor:null) steps.
- *   3. Welcome step is its own dedicated audio moment — "tap once to repeat"
- *      is taught clearly and alone before anything else happens.
- *   4. Skip announcement is IN the repeat_intro step text — no async delay,
- *      no audio overlap.
+ * Design: solid colors, no alpha. Fades only (180ms out / 260ms in, cubic).
+ * Logic: fully preserved — language pick, bilingual intro, 13-step tutorial,
+ *        repeat mode, skip, single-tap replay, long-press replay, all gates.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Image, Animated, StatusBar, PanResponder } from 'react-native';
-import * as Speech  from 'expo-speech';
+import {
+    View, Text, Animated, Easing, Image,
+    StyleSheet, Dimensions, StatusBar, PanResponder,
+} from 'react-native';
+import LottieView from 'lottie-react-native';
 import * as Haptics from 'expo-haptics';
-import { LanguagePhase }  from './LanguagePhase';
-import { TutorialPhase }  from './TutorialPhase';
-import { s }              from './styles';
 import { normalizeArabicForTTS as n } from '../../services/tts/normalize';
+import { playVoice, stopVoice } from '../../services/audio/voiceover';
 
-function speakNow(text, lang = 'en-US', rate = 0.88) {
-    Speech.stop();
-    Speech.speak(text, { language: lang, rate });
-}
+const { width: W, height: H } = Dimensions.get('window');
 
-// ── Swipe thresholds ──────────────────────────────────────────────────────────
-const SWIPE_H_PX    = 55;
-const SWIPE_UP_PX   = 80;
-const SWIPE_DOWN_PX = 80;
+// ── Palette — all solid ───────────────────────────────────────────────────────
+const BG          = '#08090D';
+const BG_CARD     = '#0F1118';
+const BG_ACTIVE   = '#131720';
+const TEXT_HI     = '#F0F0F2';
+const TEXT_MID    = '#7A7D8A';
+const TEXT_LO     = '#353840';
+const BORDER_IDLE = '#1C1E26';
+const ACCENT_BLUE = '#5AC8E8';
+const ACCENT_TEAL = '#4EDBA0';
+const ACCENT_GOLD = '#F0A830';
+const ACCENT_PURP = '#A78BFA';
 
-// ── Step colors ───────────────────────────────────────────────────────────────
-const STEP_COLORS = {
-    welcome:      '#00BFFF',
-    app_intro:    '#00BFFF',
-    intro:        '#00BFFF',
-    repeat_intro: '#00BFFF',
-    double_tap:   '#00BFFF',
-    double_done:  '#00E5A0',
-    long_press:   '#A78BFA',
-    long_done:    '#00E5A0',
-    swipe:        '#00E5A0',
-    modes_detail: '#00E5A0',
-    triple_tap:   '#FFB020',
-    swipe_up:     '#00BFFF',
-    offline_note: '#00E5A0',
-    finish:       '#FFB020',
+// ── Step accent colors ────────────────────────────────────────────────────────
+const STEP_COLOR = {
+    welcome:      ACCENT_BLUE,
+    app_intro:    ACCENT_BLUE,
+    intro:        ACCENT_BLUE,
+    double_tap:   ACCENT_BLUE,
+    double_done:  ACCENT_TEAL,
+    long_press:   ACCENT_PURP,
+    long_done:    ACCENT_TEAL,
+    swipe:        ACCENT_TEAL,
+    modes_detail: ACCENT_TEAL,
+    triple_tap:   ACCENT_GOLD,
+    swipe_up:     ACCENT_BLUE,
+    offline_note: ACCENT_TEAL,
+    finish:       ACCENT_GOLD,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TUTORIAL_STEPS
-//
-// First-time steps: welcome → app_intro → intro → gestures → finish
-// Repeat steps: repeat_intro → gestures → finish
-//   (repeat_intro fast-tracks straight to double_tap, skipping welcome/app_intro/intro)
-//
-// waitFor: null  = auto-advances after TTS finishes (user just listens)
-// waitFor: 'X'   = waits for user gesture (user actively practices)
-// ─────────────────────────────────────────────────────────────────────────────
-const TUTORIAL_STEPS = {
+// ── Tutorial steps ────────────────────────────────────────────────────────────
+// text = fallback for TTS and screen display
+// voiceKey = clip key passed to playVoice (matches filename without .mp3)
+const STEPS = {
     en: [
-        // ── Welcome (first-time only, excluded on repeat) ──────────────────
-        {
-            id: 'welcome',
-            text: "Welcome to Abserny. I'll guide you through everything. Just listen for now. Tap once anytime to repeat what I just said.",
-            waitFor: null,
-        },
-        // ── What is Abserny ────────────────────────────────────────────────
-        {
-            id: 'app_intro',
-            text: 'Abserny describes the world around you using your camera and AI. No sight needed.',
-            waitFor: null,
-        },
-        {
-            id: 'intro',
-            text: "Six gestures. Each one controls a different feature. Let's begin.",
-            waitFor: null,
-        },
-
-        // ── Repeat-only intro (start index set programmatically on isRepeat) ─
-        {
-            id: 'repeat_intro',
-            text: 'Tutorial. Tap once to repeat any step. Swipe down to skip straight to the end.',
-            waitFor: null,
-        },
-
-        // ── Gesture 1: Double tap ──────────────────────────────────────────
-        {
-            id: 'double_tap',
-            text: 'First: double tap anywhere to take a photo and hear a description. Try it now.',
-            waitFor: 'doubleTap',
-        },
-        {
-            id: 'double_done',
-            text: 'Good. Every double tap captures and describes what the camera sees.',
-            waitFor: null,
-        },
-
-        // ── Gesture 2: Long press ──────────────────────────────────────────
-        {
-            id: 'long_press',
-            text: 'Second: long press to repeat the last description. Hold your finger down now.',
-            waitFor: 'longPress',
-        },
-        {
-            id: 'long_done',
-            text: 'Good. Long press replays the last result — useful when you miss something.',
-            waitFor: null,
-        },
-
-        // ── Gesture 3: Swipe + modes ───────────────────────────────────────
-        {
-            id: 'swipe',
-            text: 'Third: swipe left or right to change modes. Try swiping now.',
-            waitFor: 'swipe',
-        },
-        {
-            id: 'modes_detail',
-            text: 'Four modes: Scene describes surroundings. Object identifies items. Read reads text. People locates people.',
-            waitFor: null,
-        },
-
-        // ── Gesture 4: Triple tap ──────────────────────────────────────────
-        {
-            id: 'triple_tap',
-            text: 'Fourth: triple tap to open settings — change language or replay this tutorial. Try tapping three times.',
-            waitFor: 'tripleTap',
-        },
-
-        // ── Gesture 5: Watch mode ──────────────────────────────────────────
-        {
-            id: 'swipe_up',
-            text: 'Fifth: swipe up for Watch mode. Runs hands-free while you walk and warns about hazards like steps and cars. Try it.',
-            waitFor: 'swipeUp',
-        },
-
-        // ── Offline note ───────────────────────────────────────────────────
-        {
-            id: 'offline_note',
-            text: 'One more thing: Abserny works offline too, using your device. No internet required.',
-            waitFor: null,
-        },
-
-        // ── Finish ─────────────────────────────────────────────────────────
-        {
-            id: 'finish',
-            text: 'You know everything. Double tap now to start.',
-            waitFor: 'doubleTap',
-        },
+        { id: 'welcome',      voiceKey: 'welcome',      waitFor: null,        text: "Hey, welcome. I'm Abserny — I'll be your eyes. Let me show you how I work." },
+        { id: 'app_intro',    voiceKey: 'app_intro',    waitFor: null,        text: "Point your camera at anything — a street, a sign, a face — and I'll describe it out loud. No looking at the screen needed." },
+        { id: 'intro',        voiceKey: 'intro',        waitFor: null,        text: "There are six gestures. I'll teach you one at a time. Tap once anytime to hear the current step again." },
+        { id: 'double_tap',   voiceKey: 'double_tap',   waitFor: 'doubleTap', text: "Double tap anywhere to take a photo and hear what's there. Go ahead — try it now." },
+        { id: 'double_done',  voiceKey: 'double_done',  waitFor: null,        text: "Nice. That's your main move — double tap to scan. Any time, anywhere." },
+        { id: 'long_press',   voiceKey: 'long_press',   waitFor: 'longPress', text: "Long press — hold your finger down — to replay the last thing I said. Try holding now." },
+        { id: 'long_done',    voiceKey: 'long_done',    waitFor: null,        text: "Good. Never lose what I said — just hold to hear it again." },
+        { id: 'swipe',        voiceKey: 'swipe',        waitFor: 'swipe',     text: "Swipe left or right to switch modes. Give it a try." },
+        { id: 'modes_detail', voiceKey: 'modes_detail', waitFor: null,        text: "Four modes — Scene for your surroundings, Object to identify things, Read for text, People to spot someone nearby." },
+        { id: 'triple_tap',   voiceKey: 'triple_tap',   waitFor: 'tripleTap', text: "Triple tap — three quick taps — to open settings. Try it." },
+        { id: 'swipe_up',     voiceKey: 'swipe_up',     waitFor: 'swipeUp',   text: "Swipe up for Watch Mode. I keep watching and warn you if something changes or there's a hazard ahead. Try it." },
+        { id: 'offline_note', voiceKey: 'offline_note', waitFor: null,        text: "One last thing — I work without internet too. Your device handles it on its own." },
+        { id: 'finish',       voiceKey: 'finish',       waitFor: 'doubleTap', text: "That's everything. You're ready. Double tap to start." },
     ],
-
     ar: [
-        // ── ترحيب (المرة الأولى فقط) ───────────────────────────────────────
-        {
-            id: 'welcome',
-            text: n('أهلاً بك في أَبصِرني. سأرشدك خلال كل شيء. فقط استمع الآن. اِنقُر مرة واحدة في أي وقت لإعادة ما قلته.'),
-            waitFor: null,
-        },
-        // ── ما هو أَبصِرني ─────────────────────────────────────────────────
-        {
-            id: 'app_intro',
-            text: n('أَبصِرني يَصِف العالم من حولك باستخدام الكاميرا والذكاء الاصطناعي. لا حاجة للبصر.'),
-            waitFor: null,
-        },
-        {
-            id: 'intro',
-            text: n('ست إيماءات. كل واحدة تَتحكَّم بِميزة مختلفة. لنبدأ.'),
-            waitFor: null,
-        },
-
-        // ── مقدمة الإعادة فقط ─────────────────────────────────────────────
-        {
-            id: 'repeat_intro',
-            text: n('الشرح مجدداً. اِنقُر مرة لإعادة أي خطوة. مَرِّر للأسفل للتخطّي للنهاية.'),
-            waitFor: null,
-        },
-
-        // ── الإيماءة الأولى: النقر المزدوج ────────────────────────────────
-        {
-            id: 'double_tap',
-            text: n('الأولى: اِنقُر مرتين في أي مكان لالتقاط صورة وسماع وصف. جرّبها الآن.'),
-            waitFor: 'doubleTap',
-        },
-        {
-            id: 'double_done',
-            text: n('جيد. كل نقرة مزدوجة تلتقط وتَصِف ما تراه الكاميرا.'),
-            waitFor: null,
-        },
-
-        // ── الإيماءة الثانية: الضغط المطوّل ──────────────────────────────
-        {
-            id: 'long_press',
-            text: n('الثانية: اضغط مطولاً لتكرار آخر وصف. اضغط واستمر الآن.'),
-            waitFor: 'longPress',
-        },
-        {
-            id: 'long_done',
-            text: n('جيد. الضغط المطوّل يُعيد آخر نتيجة — مفيد إذا فاتك شيء.'),
-            waitFor: null,
-        },
-
-        // ── الإيماءة الثالثة: التمرير + الأوضاع ──────────────────────────
-        {
-            id: 'swipe',
-            text: n('الثالثة: مَرِّر يميناً أو يساراً لتغيير الوضع. جرّب الآن.'),
-            waitFor: 'swipe',
-        },
-        {
-            id: 'modes_detail',
-            text: n('أربعة أوضاع: المشهد يَصِف محيطك. الأشياء تُعرّف بالأغراض. القراءة تقرأ النصوص. الأشخاص يُحدِّد الناس.'),
-            waitFor: null,
-        },
-
-        // ── الإيماءة الرابعة: النقر الثلاثي ──────────────────────────────
-        {
-            id: 'triple_tap',
-            text: n('الرابعة: اِنقُر ثلاث مرات لفتح الإعدادات — تغيير اللغة أو إعادة الشرح. جرّب الآن.'),
-            waitFor: 'tripleTap',
-        },
-
-        // ── الإيماءة الخامسة: وضع المراقبة ───────────────────────────────
-        {
-            id: 'swipe_up',
-            text: n('الخامسة: مَرِّر لأعلى لوَضع المراقبة. يعمل بدون يدين أثناء المشي ويُحذِّرك من العوائق. جرّب.'),
-            waitFor: 'swipeUp',
-        },
-
-        // ── ملاحظة عن وضع عدم الاتصال ─────────────────────────────────────
-        {
-            id: 'offline_note',
-            text: n('مُلاحَظة أخيرة: أَبصِرني يعمل بدون إنترنت أيضاً، باستخدام الذكاء المُدمَج في جهازك.'),
-            waitFor: null,
-        },
-
-        // ── الانتهاء ───────────────────────────────────────────────────────
-        {
-            id: 'finish',
-            text: n('تعلمت كل شيء. اِنقُر مرتين الآن للبدء.'),
-            waitFor: 'doubleTap',
-        },
+        { id: 'welcome',      voiceKey: 'welcome',      waitFor: null,        text: n('أهلاً. أنا أَبصِرني — سأكون عيونك. دعني أريك كيف أعمل.') },
+        { id: 'app_intro',    voiceKey: 'app_intro',    waitFor: null,        text: n('وجّه الكاميرا على أي شيء — شارع أو لافتة أو وجه — وسأصفه لك بصوت عالٍ. بدون ما تنظر للشاشة.') },
+        { id: 'intro',        voiceKey: 'intro',        waitFor: null,        text: n('هناك ست إيماءات. سأعلّمك واحدة في كل مرة. اِنقُر مرة في أي وقت لإعادة سماع الخطوة الحالية.') },
+        { id: 'double_tap',   voiceKey: 'double_tap',   waitFor: 'doubleTap', text: n('اِنقُر مرتين في أي مكان لالتقاط صورة وسماع ما فيها. جرّب الآن.') },
+        { id: 'double_done',  voiceKey: 'double_done',  waitFor: null,        text: n('ممتاز. هذه حركتك الأساسية — نقرتان للمسح. في أي وقت وأي مكان.') },
+        { id: 'long_press',   voiceKey: 'long_press',   waitFor: 'longPress', text: n('اضغط مطولاً — اثبت إصبعك على الشاشة — لإعادة آخر شيء قلته. جرّب.') },
+        { id: 'long_done',    voiceKey: 'long_done',    waitFor: null,        text: n('جيد. لا تفوتك أي معلومة — فقط اضغط مطولاً لإعادتها.') },
+        { id: 'swipe',        voiceKey: 'swipe',        waitFor: 'swipe',     text: n('مَرِّر يميناً أو يساراً للتبديل بين الأوضاع. جرّب.') },
+        { id: 'modes_detail', voiceKey: 'modes_detail', waitFor: null,        text: n('أربعة أوضاع — المشهد لمحيطك، والأشياء للتعرف على الأغراض، والقراءة للنصوص، والأشخاص للعثور على الناس قربك.') },
+        { id: 'triple_tap',   voiceKey: 'triple_tap',   waitFor: 'tripleTap', text: n('اِنقُر ثلاث مرات بسرعة لفتح الإعدادات. جرّب.') },
+        { id: 'swipe_up',     voiceKey: 'swipe_up',     waitFor: 'swipeUp',   text: n('مَرِّر لأعلى لتفعيل وضع المراقبة. سأظل أراقب وأحذّرك عند أي تغيير أو خطر أمامك. جرّب.') },
+        { id: 'offline_note', voiceKey: 'offline_note', waitFor: null,        text: n('شيء أخير — أنا أعمل بدون إنترنت أيضاً. جهازك يتولى الأمر وحده.') },
+        { id: 'finish',       voiceKey: 'finish',       waitFor: 'doubleTap', text: n('هذا كل شيء. أنت مستعد. اِنقُر مرتين للبدء.') },
     ],
 };
 
-// The index of 'double_tap' in the steps array — repeat run starts here
-function getRepeatStartIndex(lang) {
-    const steps = TUTORIAL_STEPS[lang] ?? TUTORIAL_STEPS.en;
-    // repeat_intro is just before double_tap — start from repeat_intro
-    return steps.findIndex(s => s.id === 'repeat_intro');
+function getRepeatStart(lang) {
+    return STEPS[lang]?.findIndex(s => s.id === 'double_tap') ?? 0;
 }
 
+// ── Bilingual language screen voice ──────────────────────────────────────────
+// lang_intro plays EN clip first, then AR clip after a short gap
+function speakLangIntro(onDone) {
+    stopVoice();
+    playVoice('lang_intro', 'en', () => {
+        setTimeout(() => playVoice('lang_intro', 'ar', onDone, 'مرحباً في أَبصِرني. اضغط لاختيار لغتك.'), 320);
+    }, 'Welcome to Abserny. Tap to choose your language, then double tap to confirm.');
+}
+
+function speakLangReannounce() {
+    stopVoice();
+    playVoice('lang_reannounce', 'en', () => {
+        setTimeout(() => playVoice('lang_reannounce', 'ar', null, 'اضغط للتبديل. اِنقُر مرتين للتأكيد.'), 220);
+    }, 'Tap to switch language. Double tap to confirm.');
+}
+
+function speakLangSelected(code) {
+    stopVoice();
+    if (code === 'en') {
+        playVoice('lang_selected_en', 'en', null, 'English selected. Double tap to confirm.');
+    } else {
+        playVoice('lang_selected_ar', 'ar', null, 'تم اختيار العربية. اِنقُر مرتين للتأكيد.');
+    }
+}
+
+// ── Step voice ────────────────────────────────────────────────────────────────
+function speakStep(voiceKey, fallbackText, lang, onDone, onError) {
+    stopVoice();
+    playVoice(voiceKey, lang, onDone ?? onError, fallbackText);
+}
+
+// ── Gesture thresholds ────────────────────────────────────────────────────────
+const SH = 55, SU = 80, SD = 80;
+
+// ── Lottie assets ─────────────────────────────────────────────────────────────
+const LOTTIE = {
+    double_tap:   require('../../../assets/lottie/double_tap.json'),
+    double_done:  require('../../../assets/lottie/double_tap.json'),
+    long_press:   require('../../../assets/lottie/long_press.json'),
+    long_done:    require('../../../assets/lottie/long_press.json'),
+    swipe:        require('../../../assets/lottie/swipe.json'),
+    modes_detail: require('../../../assets/lottie/swipe.json'),
+    triple_tap:   require('../../../assets/lottie/triple_tap.json'),
+    swipe_up:     require('../../../assets/lottie/swipe_up.json'),
+    finish:       require('../../../assets/lottie/finish.json'),
+};
+const LOTTIE_PHONE = require('../../../assets/lottie/phone.json');
+
+// ── Step icon ─────────────────────────────────────────────────────────────────
+function StepIcon({ stepId, color }) {
+    const op     = useRef(new Animated.Value(0)).current;
+    const lottie = useRef(null);
+
+    useEffect(() => {
+        op.setValue(0);
+        Animated.timing(op, {
+            toValue: 1, duration: 260,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+        lottie.current?.reset();
+        lottie.current?.play();
+    }, [stepId]); // eslint-disable-line
+
+    const source = LOTTIE[stepId] ?? LOTTIE_PHONE;
+    return (
+        <Animated.View style={{ opacity: op, alignItems: 'center', justifyContent: 'center' }}>
+            <LottieView
+                ref={lottie}
+                source={source}
+                autoPlay loop
+                style={{ width: 88, height: 88 }}
+                colorFilters={[{ keypath: '*', color }]}
+            />
+        </Animated.View>
+    );
+}
+
+// ── Progress dots ─────────────────────────────────────────────────────────────
+function ProgressDots({ total, current, color }) {
+    const widths = useRef(
+        Array.from({ length: total }, (_, i) => new Animated.Value(i === 0 ? 18 : 4))
+    ).current;
+
+    useEffect(() => {
+        widths.forEach((w, i) => {
+            Animated.timing(w, {
+                toValue: i === current ? 18 : 4,
+                duration: 220,
+                easing: Easing.out(Easing.cubic),
+                useNativeDriver: false,
+            }).start();
+        });
+    }, [current]); // eslint-disable-line
+
+    if (total > 13) {
+        return (
+            <Text style={s.stepCounter}>
+                <Text style={{ color }}>{current + 1}</Text>
+                <Text style={{ color: TEXT_LO }}>{'/' + total}</Text>
+            </Text>
+        );
+    }
+
+    return (
+        <View style={s.dotsRow}>
+            {widths.map((w, i) => (
+                <Animated.View key={i} style={[s.dot, {
+                    width: w,
+                    backgroundColor: i <= current ? color : TEXT_LO,
+                    opacity: i === current ? 1 : i < current ? 0.4 : 0.2,
+                }]} />
+            ))}
+        </View>
+    );
+}
+
+// ── Waiting dot ───────────────────────────────────────────────────────────────
+function WaitingDot({ color }) {
+    const op = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        const loop = Animated.loop(Animated.sequence([
+            Animated.timing(op, { toValue: 0.15, duration: 600, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+            Animated.timing(op, { toValue: 1.0,  duration: 600, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        ]));
+        loop.start();
+        return () => loop.stop();
+    }, []); // eslint-disable-line
+    return <Animated.View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: color, opacity: op }} />;
+}
+
+// ── Language card ─────────────────────────────────────────────────────────────
+function LangCard({ label, sublabel, color, active }) {
+    return (
+        <View style={[
+            s.langCard,
+            active
+                ? { backgroundColor: BG_ACTIVE, borderColor: color }
+                : { backgroundColor: BG_CARD,   borderColor: BORDER_IDLE },
+        ]}>
+            <View style={[s.langCardBar, { backgroundColor: active ? color : BG_CARD }]} />
+            <View style={s.langCardContent}>
+                <Text style={[s.langLabel, { color: active ? TEXT_HI : TEXT_MID }]}>{label}</Text>
+                {active && <Text style={[s.langSublabel, { color }]}>{sublabel}</Text>}
+            </View>
+        </View>
+    );
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 export default function OnboardingScreen({
     onComplete,
     initialPhase = 'language',
     initialLang  = 'en',
     isRepeat     = false,
 }) {
-    const [phase,        setPhase]        = useState(initialPhase);
-    const [selectedLang, setSelectedLang] = useState(initialLang);
-    const [lang,         setLang]         = useState(initialLang);
-    const [tutStep,      setTutStep]      = useState(0);
+    const [phase,      setPhase]      = useState(initialPhase);
+    const [selLang,    setSelLang]    = useState(initialLang);
+    const [lang,       setLang]       = useState(initialLang);
+    const [tutStep,    setTutStep]    = useState(0);
+    const [accentColor, setAccentColor] = useState(STEP_COLOR.welcome ?? ACCENT_BLUE);
 
-    const phaseRef        = useRef(initialPhase);
-    const langRef         = useRef(initialLang);
-    const selectedLangRef = useRef(initialLang);
-    const tutStepRef      = useRef(0);
-    const waitingFor      = useRef(null);
-    const isRepeatRef     = useRef(isRepeat);
-    const onCompleteRef   = useRef(onComplete);
+    const phaseRef      = useRef(initialPhase);
+    const langRef       = useRef(initialLang);
+    const selLangRef    = useRef(initialLang);
+    const tutStepRef    = useRef(0);
+    const waitingFor    = useRef(null);
+    const isRepeatRef   = useRef(isRepeat);
+    const onCompleteRef = useRef(onComplete);
     onCompleteRef.current = onComplete;
+    const isAutoAdv     = useRef(false);
 
-    // Tracks whether a waitFor:null step is currently auto-advancing via TTS.
-    // Single-tap replay is disabled during this window to prevent racing.
-    const isAutoAdvancingRef = useRef(false);
-
-    const fadeAnim     = useRef(new Animated.Value(0)).current;
-    const slideAnim    = useRef(new Animated.Value(20)).current;
-    const progressAnim = useRef(new Animated.Value(0)).current;
-    const stepFade     = useRef(new Animated.Value(1)).current;
-    const stepSlide    = useRef(new Animated.Value(0)).current;
-    const enScale      = useRef(new Animated.Value(initialLang === 'en' ? 1 : 0.96)).current;
-    const arScale      = useRef(new Animated.Value(initialLang === 'ar' ? 1 : 0.96)).current;
+    const fadeAnim = useRef(new Animated.Value(0)).current;
+    const stepFade = useRef(new Animated.Value(1)).current;
 
     const tapCount  = useRef(0);
     const tapTimer  = useRef(null);
@@ -313,157 +273,141 @@ export default function OnboardingScreen({
     const longFired = useRef(false);
     const startPos  = useRef({ x: 0, y: 0 });
 
-    const runStepRef           = useRef(null);
-    const onGestureDetectedRef = useRef(null);
-    const confirmLangRef       = useRef(null);
+    const runStepRef     = useRef(null);
+    const gestureRef     = useRef(null);
+    const confirmLangRef = useRef(null);
+    const skipRef        = useRef(null);
 
-    // ── Skip to finish (swipe down on repeat runs) ────────────────────────────
-    const skipToFinish = (currentLang) => {
-        const steps   = TUTORIAL_STEPS[currentLang] ?? TUTORIAL_STEPS.en;
-        const finishI = steps.findIndex(s => s.id === 'finish');
+    const EASE_OUT = Easing.out(Easing.cubic);
+    const EASE_IN  = Easing.in(Easing.cubic);
+
+    // ── Fade helpers ──────────────────────────────────────────────────────────
+    const fadeIn = (cb) => {
+        fadeAnim.setValue(0);
+        Animated.timing(fadeAnim, { toValue: 1, duration: 280, easing: EASE_OUT, useNativeDriver: true }).start(cb);
+    };
+
+    const fadeOut = (cb) => {
+        Animated.timing(fadeAnim, { toValue: 0, duration: 180, easing: EASE_IN, useNativeDriver: true }).start(cb);
+    };
+
+    const crossFadeStep = (newColor, cb) => {
+        Animated.timing(stepFade, { toValue: 0, duration: 160, easing: EASE_IN, useNativeDriver: true }).start(() => {
+            setAccentColor(newColor);
+            cb?.();
+            Animated.timing(stepFade, { toValue: 1, duration: 240, easing: EASE_OUT, useNativeDriver: true }).start();
+        });
+    };
+
+    // ── Skip ──────────────────────────────────────────────────────────────────
+    skipRef.current = () => {
+        const steps   = STEPS[langRef.current] ?? STEPS.en;
+        const finishI = steps.findIndex(st => st.id === 'finish');
         if (finishI < 0) return;
-        isAutoAdvancingRef.current = false;
+        isAutoAdv.current  = false;
         waitingFor.current = null;
-        const sLang = currentLang === 'ar' ? 'ar-SA' : 'en-US';
-        const msg   = currentLang === 'ar'
-            ? n('تمَّ التخطّي.')
-            : 'Skipped.';
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        speakNow(msg, sLang);
-        setTimeout(() => runStepRef.current(finishI, currentLang), 700);
+        playVoice('skipped', langRef.current, null,
+            langRef.current === 'ar' ? 'تمَّ التخطّي.' : 'Skipped.');
+        setTimeout(() => runStepRef.current(finishI, langRef.current), 700);
     };
 
     // ── Core step runner ──────────────────────────────────────────────────────
-    runStepRef.current = (stepIndex, currentLang) => {
-        const steps = TUTORIAL_STEPS[currentLang] ?? TUTORIAL_STEPS.en;
-        if (stepIndex >= steps.length) return;
-        const step  = steps[stepIndex];
-        const sLang = currentLang === 'ar' ? 'ar-SA' : 'en-US';
-        const sRate = currentLang === 'ar' ? 0.82 : 0.88;
+    runStepRef.current = (idx, curLang) => {
+        const steps = STEPS[curLang] ?? STEPS.en;
+        if (idx >= steps.length) return;
+        const step  = steps[idx];
+        const color = STEP_COLOR[step.id] ?? ACCENT_BLUE;
 
-        waitingFor.current         = step.waitFor;
-        tutStepRef.current         = stepIndex;
-        isAutoAdvancingRef.current = false;  // reset — set true below if auto-advancing
+        waitingFor.current = step.waitFor;
+        tutStepRef.current = idx;
+        isAutoAdv.current  = false;
 
-        stepFade.setValue(0);
-        stepSlide.setValue(14);
-        setTutStep(stepIndex);
-
-        requestAnimationFrame(() => {
-            Animated.parallel([
-                Animated.timing(stepFade,  { toValue: 1, duration: 240, useNativeDriver: true }),
-                Animated.timing(stepSlide, { toValue: 0, duration: 240, useNativeDriver: true }),
-            ]).start();
-        });
-
-        Animated.timing(progressAnim, {
-            toValue:  steps.length > 1 ? stepIndex / (steps.length - 1) : 1,
-            duration: 500,
-            useNativeDriver: false,
-        }).start();
+        crossFadeStep(color, () => setTutStep(idx));
 
         setTimeout(() => {
-            Speech.stop();
-
             if (step.waitFor) {
-                // User must perform a gesture — single tap replay is allowed
-                isAutoAdvancingRef.current = false;
-                Speech.speak(step.text, { language: sLang, rate: sRate });
+                isAutoAdv.current = false;
+                speakStep(step.voiceKey, step.text, curLang);
             } else {
-                // Auto-advancing step — block single-tap replay while TTS plays
-                // to prevent the replay racing with onDone → runStepRef(next)
-                isAutoAdvancingRef.current = true;
-                const next = stepIndex + 1;
-                Speech.speak(step.text, {
-                    language: sLang,
-                    rate:     sRate,
-                    onDone: () => {
-                        isAutoAdvancingRef.current = false;
-                        setTimeout(() => {
-                            if (next >= steps.length) onCompleteRef.current(currentLang);
-                            else runStepRef.current(next, currentLang);
-                        }, 500);
-                    },
-                    onError: () => {
-                        isAutoAdvancingRef.current = false;
-                        setTimeout(() => {
-                            if (next >= steps.length) onCompleteRef.current(currentLang);
-                            else runStepRef.current(next, currentLang);
-                        }, 1000);
-                    },
-                });
+                isAutoAdv.current = true;
+                const next = idx + 1;
+                const advance = () => {
+                    isAutoAdv.current = false;
+                    setTimeout(() => {
+                        if (next >= steps.length) onCompleteRef.current(curLang);
+                        else runStepRef.current(next, curLang);
+                    }, 700);
+                };
+                speakStep(step.voiceKey, step.text, curLang, advance, advance);
             }
-        }, 100);
+        }, 120);
     };
 
-    // ── Gesture detected ──────────────────────────────────────────────────────
-    onGestureDetectedRef.current = (gestureType) => {
-        if (waitingFor.current !== gestureType) return;
+    // ── Gesture handler ───────────────────────────────────────────────────────
+    gestureRef.current = (gType) => {
+        if (waitingFor.current !== gType) return;
         waitingFor.current = null;
-        const currentLang = langRef.current;
-        const step = (TUTORIAL_STEPS[currentLang] ?? TUTORIAL_STEPS.en)[tutStepRef.current];
+        const curLang = langRef.current;
+        const step    = (STEPS[curLang] ?? STEPS.en)[tutStepRef.current];
         if (step?.id === 'finish') {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-            setTimeout(() => onCompleteRef.current(currentLang), 150);
+            setTimeout(() => onCompleteRef.current(curLang), 150);
             return;
         }
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        setTimeout(() => runStepRef.current(tutStepRef.current + 1, currentLang), 250);
+        setTimeout(() => runStepRef.current(tutStepRef.current + 1, curLang), 250);
     };
 
     // ── Language confirm ──────────────────────────────────────────────────────
     confirmLangRef.current = () => {
-        const chosenLang = selectedLangRef.current;
-        langRef.current  = chosenLang;
-        phaseRef.current = 'tutorial';
-        setLang(chosenLang);
+        const chosen = selLangRef.current;
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        speakNow(
-            chosenLang === 'en' ? 'Got it.' : n('تمَّ الأمر.'),
-            chosenLang === 'en' ? 'en-US' : 'ar-SA',
-        );
+        playVoice('lang_confirm', chosen, null,
+            chosen === 'en' ? 'Got it.' : 'تمَّ الأمر.');
         setTimeout(() => {
-            Animated.timing(fadeAnim, { toValue: 0, duration: 220, useNativeDriver: true })
-                .start(() => {
-                    setPhase('tutorial');
-                    setTutStep(0);
-                    tutStepRef.current = 0;
-                    waitingFor.current = null;
-                    isAutoAdvancingRef.current = false;
-                    stepFade.setValue(1);
-                    stepSlide.setValue(0);
-                    fadeAnim.setValue(0);
-                    slideAnim.setValue(16);
-                    Animated.parallel([
-                        Animated.timing(fadeAnim,  { toValue: 1, duration: 320, useNativeDriver: true }),
-                        Animated.timing(slideAnim, { toValue: 0, duration: 320, useNativeDriver: true }),
-                    ]).start(() => setTimeout(() => runStepRef.current(0, chosenLang), 100));
+            fadeOut(() => {
+                langRef.current  = chosen;
+                phaseRef.current = 'tutorial';
+                setLang(chosen);
+                setPhase('tutorial');
+                setTutStep(0);
+                tutStepRef.current = 0;
+                waitingFor.current = null;
+                isAutoAdv.current  = false;
+                fadeIn(() => {
+                    const startIdx = isRepeatRef.current ? getRepeatStart(chosen) : 0;
+                    setTimeout(() => {
+                        if (isRepeatRef.current) {
+                            playVoice('repeat_reminder', chosen,
+                                () => setTimeout(() => runStepRef.current(startIdx, chosen), 400),
+                                chosen === 'ar'
+                                    ? 'بسرعة — اِنقُر مرة لإعادة أي خطوة.'
+                                    : 'Quick reminder — tap once to replay any step.',
+                            );
+                        } else {
+                            runStepRef.current(startIdx, chosen);
+                        }
+                    }, 100);
                 });
-        }, 500);
+            });
+        }, 380);
     };
 
     // ── Mount ─────────────────────────────────────────────────────────────────
     useEffect(() => {
-        Animated.parallel([
-            Animated.timing(fadeAnim,  { toValue: 1, duration: 500, useNativeDriver: true }),
-            Animated.timing(slideAnim, { toValue: 0, duration: 500, useNativeDriver: true }),
-        ]).start();
-
+        fadeIn();
         if (initialPhase === 'tutorial') {
-            const startIdx = isRepeatRef.current
-                ? getRepeatStartIndex(initialLang)   // → repeat_intro
-                : 0;                                  // → welcome
+            const startIdx = isRepeatRef.current ? getRepeatStart(initialLang) : 0;
             setTimeout(() => runStepRef.current(startIdx, initialLang), 200);
         } else {
-            setTimeout(() => speakNow(
-                'Welcome to Abserny. Swipe right for English. Swipe left for Arabic. Double tap to confirm.',
-                'en-US', 0.88,
-            ), 150);
+            setTimeout(() => speakLangIntro(), 400);
         }
+        return () => stopVoice();
     }, []); // eslint-disable-line
 
     // ── PanResponder ──────────────────────────────────────────────────────────
-    const panResponder = useRef(PanResponder.create({
+    const pan = useRef(PanResponder.create({
         onStartShouldSetPanResponder:        () => true,
         onStartShouldSetPanResponderCapture: () => true,
         onMoveShouldSetPanResponder:         () => false,
@@ -477,17 +421,15 @@ export default function OnboardingScreen({
                 clearTimeout(tapTimer.current);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
                 if (phaseRef.current === 'language') {
-                    speakNow(
-                        'Swipe right for English. Swipe left for Arabic. Double tap to confirm.',
-                        'en-US',
-                    );
+                    speakLangReannounce();
                 } else if (waitingFor.current === 'longPress') {
-                    // On the long_press teaching step: user performed it — advance.
-                    onGestureDetectedRef.current('longPress');
+                    gestureRef.current('longPress');
+                } else {
+                    if (!isAutoAdv.current) {
+                        Haptics.selectionAsync();
+                        runStepRef.current(tutStepRef.current, langRef.current);
+                    }
                 }
-                // On all other tutorial steps: long press does NOTHING.
-                // Single tap already handles replay. Adding replay here caused
-                // the "keeps repeating" bug — both fired in sequence.
             }, 700);
         },
 
@@ -497,153 +439,195 @@ export default function OnboardingScreen({
 
             const dx  = e.nativeEvent.pageX - startPos.current.x;
             const dy  = e.nativeEvent.pageY - startPos.current.y;
-            const adx = Math.abs(dx);
-            const ady = Math.abs(dy);
+            const adx = Math.abs(dx), ady = Math.abs(dy);
 
-            // ── Swipe DOWN → skip (repeat runs only) ─────────────────────
-            if (dy > SWIPE_DOWN_PX && ady > adx * 1.3) {
-                tapCount.current = 0;
-                clearTimeout(tapTimer.current);
-                if (phaseRef.current === 'tutorial' && isRepeatRef.current) {
-                    skipToFinish(langRef.current);
-                }
+            if (dy > SD && ady > adx * 1.3) {
+                tapCount.current = 0; clearTimeout(tapTimer.current);
+                if (phaseRef.current === 'tutorial' && isRepeatRef.current) skipRef.current();
                 return;
             }
 
-            // ── Swipe UP → watch mode gesture step ────────────────────────
-            if (dy < -SWIPE_UP_PX && ady > adx * 1.3) {
-                tapCount.current = 0;
-                clearTimeout(tapTimer.current);
-                if (phaseRef.current === 'tutorial') onGestureDetectedRef.current('swipeUp');
+            if (dy < -SU && ady > adx * 1.3) {
+                tapCount.current = 0; clearTimeout(tapTimer.current);
+                if (phaseRef.current === 'tutorial') gestureRef.current('swipeUp');
                 return;
             }
 
-            // ── Swipe LEFT/RIGHT → lang select or swipe gesture step ──────
-            if (adx >= SWIPE_H_PX && adx > ady * 1.2) {
-                tapCount.current = 0;
-                clearTimeout(tapTimer.current);
+            if (adx >= SH && adx > ady * 1.2) {
+                tapCount.current = 0; clearTimeout(tapTimer.current);
                 if (phaseRef.current === 'language') {
-                    // Wrap: swipe always toggles to the other language —
-                    // so swiping right when English is already selected still
-                    // works (it selects Arabic, wrapping around).
-                    // Same feel as mode navigation in the main screen.
-                    const current = selectedLangRef.current;
-                    const code    = current === 'en' ? 'ar' : 'en';
-                    selectedLangRef.current = code;
-                    setSelectedLang(code);
-                    Animated.parallel([
-                        Animated.spring(code === 'en' ? enScale : arScale, { toValue: 1,    useNativeDriver: true, tension: 260, friction: 12 }),
-                        Animated.spring(code === 'en' ? arScale : enScale, { toValue: 0.96, useNativeDriver: true, tension: 260, friction: 12 }),
-                    ]).start();
-                    speakNow(
-                        code === 'en'
-                            ? 'English selected. Double tap to confirm.'
-                            : n('تم اختيار العربية. اِنقُر مرتين للتأكيد.'),
-                        code === 'en' ? 'en-US' : 'ar-SA',
-                        code === 'en' ? 0.88    : 0.82,
-                    );
+                    const code = selLangRef.current === 'en' ? 'ar' : 'en';
+                    selLangRef.current = code; setSelLang(code);
                     Haptics.selectionAsync();
+                    speakLangSelected(code);
                 } else {
-                    onGestureDetectedRef.current('swipe');
+                    gestureRef.current('swipe');
                 }
                 return;
             }
 
             if (adx > 20 || ady > 20) return;
 
-            // ── Tap counting ──────────────────────────────────────────────
             tapCount.current += 1;
             clearTimeout(tapTimer.current);
 
-            // Triple tap → settings gesture step
-            if (tapCount.current >= 3) {
+            if (tapCount.current === 3) {
                 tapCount.current = 0;
-                if (phaseRef.current === 'tutorial') onGestureDetectedRef.current('tripleTap');
+                if (phaseRef.current === 'tutorial') gestureRef.current('tripleTap');
+                return;
+            }
+
+            if (tapCount.current > 3) {
+                tapCount.current = 0;
                 return;
             }
 
             tapTimer.current = setTimeout(() => {
-                const count = tapCount.current;
-                tapCount.current = 0;
-
+                const count = tapCount.current; tapCount.current = 0;
                 if (count === 2) {
-                    if (phaseRef.current === 'language') {
-                        confirmLangRef.current();
-                    } else {
-                        // Double tap in tutorial → ONLY fires doubleTap gesture
-                        // Skip is now SWIPE DOWN — no conflict possible here.
-                        onGestureDetectedRef.current('doubleTap');
-                    }
-
+                    if (phaseRef.current === 'language') confirmLangRef.current();
+                    else gestureRef.current('doubleTap');
                 } else if (count === 1) {
                     if (phaseRef.current === 'language') {
-                        // Re-announce current language selection
-                        const code = selectedLangRef.current;
-                        speakNow(
-                            code === 'en'
-                                ? 'English selected. Double tap to confirm.'
-                                : n('تم اختيار العربية. اِنقُر مرتين للتأكيد.'),
-                            code === 'en' ? 'en-US' : 'ar-SA',
-                        );
+                        speakLangReannounce();
                     } else {
-                        // Replay current step — only if not mid-auto-advance.
-                        // This prevents racing with the TTS onDone → runStepRef(next).
-                        if (!isAutoAdvancingRef.current) {
-                            Speech.stop();
+                        if (!isAutoAdv.current) {
+                            stopVoice();
                             Haptics.selectionAsync();
                             runStepRef.current(tutStepRef.current, langRef.current);
                         }
-                        // If auto-advancing, silently ignore — the TTS will finish naturally.
                     }
                 }
-            }, 320);
+            }, 380);
         },
 
         onPanResponderTerminate: () => {
             clearTimeout(longTimer.current);
             clearTimeout(tapTimer.current);
+            longFired.current = false;
+            tapCount.current  = 0;
         },
     })).current;
 
-    // ── Render ────────────────────────────────────────────────────────────────
-    const steps       = TUTORIAL_STEPS[lang] ?? TUTORIAL_STEPS.en;
-    const currentStep = steps[Math.min(tutStep, steps.length - 1)];
-    const stepColor   = STEP_COLORS[currentStep?.id] ?? '#00BFFF';
-    const isWaiting   = !!currentStep?.waitFor;
-    const isRTL       = lang === 'ar';
+    // ── Derived ───────────────────────────────────────────────────────────────
+    const steps     = STEPS[lang] ?? STEPS.en;
+    const step      = steps[Math.min(tutStep, steps.length - 1)];
+    const stepColor = STEP_COLOR[step?.id] ?? ACCENT_BLUE;
+    const isWaiting = !!step?.waitFor;
+    const isRTL     = lang === 'ar';
 
     return (
-        <View style={s.root} {...panResponder.panHandlers}>
+        <View style={s.root} {...pan.panHandlers}>
             <StatusBar hidden />
-            <Animated.View style={[
-                s.content,
-                { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-            ]}>
-                <Image
-                    source={require('../../../assets/images/logorm.png')}
-                    style={s.logo}
-                />
-                {phase === 'language' ? (
-                    <LanguagePhase
-                        selectedLang={selectedLang}
-                        enScale={enScale}
-                        arScale={arScale}
+
+            <Animated.View style={[s.screen, { opacity: fadeAnim }]}>
+
+                <View style={s.header}>
+                    <Image
+                        source={require('../../../assets/images/logorm.png')}
+                        style={s.logo}
+                        resizeMode="contain"
+                        accessibilityLabel="Abserny"
                     />
-                ) : (
-                    <TutorialPhase
-                        currentStep={currentStep}
-                        tutStep={tutStep}
-                        stepsLength={steps.length}
-                        stepColor={stepColor}
-                        stepFade={stepFade}
-                        stepSlide={stepSlide}
-                        progressAnim={progressAnim}
-                        isWaiting={isWaiting}
-                        isRTL={isRTL}
-                        isRepeat={isRepeat}
-                    />
+                </View>
+
+                {/* ── Language phase ── */}
+                {phase === 'language' && (
+                    <View style={s.langScreen}>
+                        <Text style={s.langEyebrow}>SELECT LANGUAGE · اختر اللغة</Text>
+                        <View style={s.langList}>
+                            <LangCard label="English"  sublabel="double tap to confirm"     color={ACCENT_BLUE} active={selLang === 'en'} />
+                            <View style={s.langDivider} />
+                            <LangCard label="العربية" sublabel="اِنقُر مرتين للتأكيد"      color={ACCENT_TEAL} active={selLang === 'ar'} />
+                        </View>
+                        <Text style={s.langHint}>
+                            {selLang === 'en'
+                                ? 'swipe to switch · double tap to confirm'
+                                : 'مرّر للتبديل · اِنقُر مرتين للتأكيد'}
+                        </Text>
+                    </View>
                 )}
+
+                {/* ── Tutorial phase ── */}
+                {phase === 'tutorial' && (
+                    <View style={s.tutScreen}>
+                        <View style={s.progressArea}>
+                            <ProgressDots total={steps.length} current={tutStep} color={stepColor} />
+                        </View>
+
+                        <Animated.View style={[s.instructionArea, { opacity: stepFade }]}>
+                            <Text style={[s.instructionText, isRTL && s.rtl]}>
+                                {step?.text ?? ''}
+                            </Text>
+                        </Animated.View>
+
+                        <Animated.View style={[s.iconArea, { opacity: stepFade }]}>
+                            <StepIcon stepId={step?.id} color={stepColor} />
+                        </Animated.View>
+
+                        <View style={s.hintArea}>
+                            {isWaiting ? (
+                                <View style={s.waitingRow}>
+                                    <WaitingDot color={stepColor} />
+                                    <Text style={[s.waitingText, { color: stepColor }]}>
+                                        {isRTL ? 'يجري الانتظار' : 'WAITING FOR GESTURE'}
+                                    </Text>
+                                </View>
+                            ) : (
+                                <Text style={s.hintText}>
+                                    {isRTL ? 'اِنقُر مرة للإعادة' : 'TAP ONCE TO REPLAY'}
+                                </Text>
+                            )}
+                            {isRepeat && !isWaiting && (
+                                <Text style={[s.hintText, { marginTop: 8 }]}>
+                                    {isRTL ? 'مرّر للأسفل للتخطّي' : 'SWIPE DOWN TO SKIP'}
+                                </Text>
+                            )}
+                        </View>
+
+                        <View style={[s.bottomLine, { backgroundColor: accentColor }]} />
+                    </View>
+                )}
+
             </Animated.View>
         </View>
     );
 }
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+const s = StyleSheet.create({
+    root:   { flex: 1, backgroundColor: BG },
+    screen: { flex: 1 },
+    header: { alignItems: 'center', paddingTop: 56 },
+    logo:   { width: 96, height: 30 },
+
+    langScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, paddingBottom: 64 },
+    langEyebrow: { color: TEXT_MID, fontSize: 9, letterSpacing: 3, fontWeight: '600', textAlign: 'center', marginBottom: 36 },
+    langList: { width: '100%', borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: BORDER_IDLE },
+    langCard: { flexDirection: 'row', alignItems: 'center', paddingVertical: 28, borderWidth: 0 },
+    langCardBar: { width: 3, height: 32, marginRight: 22 },
+    langCardContent: { flex: 1, paddingRight: 20 },
+    langLabel: { fontSize: 28, fontWeight: '500', letterSpacing: -0.4 },
+    langSublabel: { fontSize: 11, letterSpacing: 0.8, marginTop: 5 },
+    langDivider: { height: 1, backgroundColor: BORDER_IDLE },
+    langHint: { marginTop: 28, color: TEXT_LO, fontSize: 10, letterSpacing: 1.5, textAlign: 'center', fontWeight: '500' },
+
+    tutScreen: { flex: 1, paddingHorizontal: 30 },
+    progressArea: { paddingTop: 24, paddingBottom: 36, alignItems: 'flex-start' },
+    dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    dot: { height: 3, borderRadius: 1.5 },
+    stepCounter: { fontSize: 12, fontWeight: '600', letterSpacing: 1, color: TEXT_LO },
+
+    instructionArea: { flex: 1, justifyContent: 'center', paddingBottom: 12 },
+    instructionText: { color: TEXT_HI, fontSize: 26, lineHeight: 40, fontWeight: '300', letterSpacing: -0.3, textAlign: 'left' },
+    rtl: { textAlign: 'right', writingDirection: 'rtl' },
+
+    iconArea: { alignItems: 'center', justifyContent: 'center', paddingBottom: 28, height: 104 },
+
+    hintArea: { alignItems: 'center', paddingBottom: 52 },
+    waitingRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+    waitingText: { fontSize: 9, letterSpacing: 2.5, fontWeight: '600' },
+    hintText: { color: TEXT_LO, fontSize: 9, letterSpacing: 2.5, fontWeight: '600' },
+
+    bottomLine: { position: 'absolute', bottom: 0, left: '25%', right: '25%', height: 1 },
+});

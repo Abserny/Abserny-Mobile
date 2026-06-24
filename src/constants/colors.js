@@ -7,16 +7,16 @@
  */
 
 // ── Mode accent colors ────────────────────────────────────────────────────────
-export const CYAN   = '#00BFFF';   // Scene mode + primary action
-export const GREEN  = '#00E5A0';   // Read mode + watch mode + online
-export const AMBER  = '#FFB020';   // People mode + offline + auto-scan
+export const CYAN   = '#5AC8E8';   // Scene mode + primary action — softer blue
+export const GREEN  = '#4EDBA0';   // Read mode + watch mode + online — muted green
+export const AMBER  = '#F0A830';   // People mode + offline + auto-scan — warmer
 export const PURPLE = '#A78BFA';   // Object mode
 export const RED    = '#FF4455';   // Error states
 
 // ── Surface hierarchy (dark tinted system) ────────────────────────────────────
-export const BG         = '#0F1112';   // Base — camera sits behind this
-export const SURFACE    = '#161A1C';   // Component level cards / sheets
-export const SURFACE_HI = '#1E2326';   // Top level — modals, active badges
+export const BG         = '#0A0C0E';   // Base — deeper black, camera bleeds less
+export const SURFACE    = '#12161A';   // Component level cards / sheets
+export const SURFACE_HI = '#171B1E';   // Top level — tighter contrast range
 
 // ── Text ──────────────────────────────────────────────────────────────────────
 export const ON_SURFACE     = 'rgba(255,255,255,0.90)';
